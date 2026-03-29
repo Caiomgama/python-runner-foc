@@ -8,7 +8,7 @@ FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 
 DASHBOARD_URL_PARTS = [
     "/criare/servlet/wbpnucadashboard",
-    "/criare/servlet/wbpnucnovdashboard",
+    "/criare/servlet/wbpnucnovodashboard",
 ]
 
 
