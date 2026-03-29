@@ -9,9 +9,13 @@ FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 DASHBOARD_URL_PARTS = [
     "/criare/servlet/wbpnucadashboard",
     "/criare/servlet/wbpnucnovdashboard",
+    "/criare/servlet/wbpnucnovodashboard",
 ]
 
-CONTRATOS_URL_PART = "/criare/wbpvencontratos"
+CONTRATOS_URL_PARTS = [
+    "/criare/wbpvencontratos",
+    "/criare/servlet/wbpvencontratos",
+]
 
 
 def is_dashboard(page):
@@ -20,7 +24,8 @@ def is_dashboard(page):
 
 
 def is_contratos_page(page):
-    return CONTRATOS_URL_PART in (page.url or "")
+    url = page.url or ""
+    return any(part in url for part in CONTRATOS_URL_PARTS)
 
 
 def find_in_any_frame(page, selector: str, timeout_ms: int = 3000):
@@ -87,13 +92,12 @@ def garantir_login(page):
         if is_dashboard(page):
             return "login_executado"
 
-        raise Exception("Login executado, mas dashboard não foi confirmado")
+        raise Exception(f"Login executado, mas dashboard não foi confirmado. URL final: {page.url}")
 
-    raise Exception("Página abriu, mas não estava nem no dashboard nem no formulário de login")
+    raise Exception(f"Página abriu, mas não estava nem no dashboard nem no formulário de login. URL final: {page.url}")
 
 
 def abrir_contratos(page):
-    # tenta clicar no menu lateral "Contratos"
     seletores = [
         'a[href="wbpvencontratos"]',
         'a[href*="wbpvencontratos"]',
@@ -119,12 +123,11 @@ def abrir_contratos(page):
     page.wait_for_timeout(6000)
 
     if not is_contratos_page(page):
-        # fallback: abre direto
         page.goto("https://web.foccolojas.com.br/criare/wbpvencontratos", wait_until="networkidle", timeout=90000)
         page.wait_for_timeout(6000)
 
     if not is_contratos_page(page):
-        raise Exception("Página de contratos não foi confirmada")
+        raise Exception(f"Página de contratos não foi confirmada. URL final: {page.url}")
 
 
 def extrair_texto_celula(cells, idx):
@@ -139,7 +142,6 @@ def extrair_texto_celula(cells, idx):
 def listar_contratos_visiveis(page, max_linhas=30):
     contratos = []
 
-    # pega linhas visíveis da tabela principal
     linhas = page.locator("table tr").all()
 
     for linha in linhas:
