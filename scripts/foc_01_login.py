@@ -6,11 +6,15 @@ FOCCO_URL = os.getenv("FOCCO_URL", "https://web.foccolojas.com.br/")
 FOCCO_USERNAME = os.getenv("FOCCO_USERNAME", "")
 FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 
-DASHBOARD_URL_PART = "/criare/servlet/wbpnucadashboard"
+DASHBOARD_URL_PARTS = [
+    "/criare/servlet/wbpnucadashboard",
+    "/criare/servlet/wbpnucnovdashboard",
+]
 
 
 def is_dashboard(page):
-    return DASHBOARD_URL_PART in (page.url or "")
+    url = page.url or ""
+    return any(part in url for part in DASHBOARD_URL_PARTS)
 
 
 def find_in_any_frame(page, selector: str, timeout_ms: int = 3000):
