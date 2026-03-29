@@ -12,6 +12,17 @@ SESSION_DIR.mkdir(parents=True, exist_ok=True)
 STORAGE_FILE = SESSION_DIR / "focco_storage.json"
 
 
+def first_visible(page, selectors, timeout_each=3000):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            locator.wait_for(state="visible", timeout=timeout_each)
+            return locator, selector
+        except Exception:
+            pass
+    return None, None
+
+
 def main():
     if not FOCCO_USERNAME or not FOCCO_PASSWORD:
         print(json.dumps({
@@ -30,24 +41,48 @@ def main():
             "url_inicial": FOCCO_URL,
             "url_final": None,
             "storage_file": str(STORAGE_FILE),
-            "mensagem": ""
+            "mensagem": "",
+            "selector_usuario": None,
+            "selector_senha": None
         }
 
         try:
             page.goto(FOCCO_URL, wait_until="domcontentloaded", timeout=60000)
+            page.wait_for_timeout(3000)
 
-            # Ajuste inicial genérico: tentar localizar campos de usuário e senha
-            usuario = page.locator('input[type="text"], input[name*="user" i], input[id*="user" i], input[name*="login" i], input[id*="login" i]').first
-            senha = page.locator('input[type="password"]').first
+            usuario_selectors = [
+                'input[name="vUSUARIO"]',
+                'input[id="vUSUARIO"]',
+                'input[name="usuario"]',
+                'input[id="usuario"]',
+                'input[name="login"]',
+                'input[id="login"]',
+                'input[type="text"]:not([type="hidden"])',
+            ]
 
-            usuario.wait_for(timeout=15000)
-            senha.wait_for(timeout=15000)
+            senha_selectors = [
+                'input[name="vSENHA"]',
+                'input[id="vSENHA"]',
+                'input[name="senha"]',
+                'input[id="senha"]',
+                'input[type="password"]',
+            ]
+
+            usuario, sel_usuario = first_visible(page, usuario_selectors)
+            senha, sel_senha = first_visible(page, senha_selectors)
+
+            resultado["selector_usuario"] = sel_usuario
+            resultado["selector_senha"] = sel_senha
+
+            if not usuario:
+                raise Exception("Campo de usuário visível não encontrado")
+            if not senha:
+                raise Exception("Campo de senha visível não encontrado")
 
             usuario.fill(FOCCO_USERNAME)
             senha.fill(FOCCO_PASSWORD)
 
-            # tenta botão comum de login
-            possiveis_botoes = [
+            botoes = [
                 'button[type="submit"]',
                 'input[type="submit"]',
                 'button:has-text("Entrar")',
@@ -57,13 +92,13 @@ def main():
             ]
 
             clicou = False
-            for seletor in possiveis_botoes:
+            for seletor in botoes:
                 try:
                     botao = page.locator(seletor).first
-                    if botao.is_visible(timeout=2000):
-                        botao.click()
-                        clicou = True
-                        break
+                    botao.wait_for(state="visible", timeout=1500)
+                    botao.click()
+                    clicou = True
+                    break
                 except Exception:
                     pass
 
@@ -71,7 +106,6 @@ def main():
                 page.keyboard.press("Enter")
 
             page.wait_for_timeout(5000)
-
             resultado["url_final"] = page.url
 
             context.storage_state(path=str(STORAGE_FILE))
@@ -80,8 +114,8 @@ def main():
             resultado["mensagem"] = "Login executado e sessão salva"
 
         except Exception as e:
+            resultado["url_final"] = page.url
             resultado["mensagem"] = f"Erro no login: {str(e)}"
-            resultado["url_final"] = page.url if page else None
 
         finally:
             browser.close()
