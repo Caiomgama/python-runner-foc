@@ -7,7 +7,6 @@ FOCCO_USERNAME = os.getenv("FOCCO_USERNAME", "")
 FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 
 DASHBOARD_URL_PARTS = [
-    "/criare/servlet/wbpnucadashboard",
     "/criare/servlet/wbpnucnovodashboard",
 ]
 
@@ -39,7 +38,7 @@ def set_value(frame, selector, value):
             el.dispatchEvent(new Event('blur', { bubbles: true }));
         }
         """,
-        value
+        value,
     )
 
 
@@ -47,7 +46,12 @@ def has_login_form(page):
     frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 2000)
     frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 2000)
     frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 2000)
-    return frame_user is not None and frame_pass is not None and frame_btn is not None
+
+    return (
+        frame_user is not None
+        and frame_pass is not None
+        and frame_btn is not None
+    )
 
 
 def do_login(page):
@@ -57,8 +61,10 @@ def do_login(page):
 
     if not frame_user:
         raise Exception("Campo usuário não encontrado em nenhum frame")
+
     if not frame_pass:
         raise Exception("Campo senha não encontrado em nenhum frame")
+
     if not frame_btn:
         raise Exception("Botão entrar não encontrado em nenhum frame")
 
@@ -76,21 +82,28 @@ def main():
         "already_logged_in": False,
         "login_executed": False,
         "frames": [],
-        "mensagem": ""
+        "mensagem": "",
     }
 
     if not FOCCO_USERNAME or not FOCCO_PASSWORD:
-        print(json.dumps({
-            "success": False,
-            "error": "FOCCO_USERNAME ou FOCCO_PASSWORD não configurados"
-        }, ensure_ascii=False))
+        print(
+            json.dumps(
+                {
+                    "success": False,
+                    "error": "FOCCO_USERNAME ou FOCCO_PASSWORD não configurados",
+                },
+                ensure_ascii=False,
+            )
+        )
         raise SystemExit(1)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
 
         try:
-            context = browser.new_context(viewport={"width": 1600, "height": 900})
+            context = browser.new_context(
+                viewport={"width": 1600, "height": 900}
+            )
             page = context.new_page()
 
             page.goto(FOCCO_URL, wait_until="networkidle", timeout=90000)
@@ -104,6 +117,7 @@ def main():
                 resultado["login_executed"] = False
                 resultado["url_final"] = page.url
                 resultado["mensagem"] = "Sessão já estava autenticada"
+
                 print(json.dumps(resultado, ensure_ascii=False))
                 return
 
@@ -125,7 +139,9 @@ def main():
                 return
 
             resultado["url_final"] = page.url
-            resultado["mensagem"] = "Página abriu, mas não estava nem no dashboard nem no formulário de login"
+            resultado["mensagem"] = (
+                "Página abriu, mas não estava nem no dashboard nem no formulário de login"
+            )
 
         except Exception as e:
             resultado["url_final"] = page.url if "page" in locals() and page else None

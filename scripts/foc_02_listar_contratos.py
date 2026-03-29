@@ -12,6 +12,7 @@ DASHBOARD_URL_PARTS = [
     "/criare/servlet/wbpnucnovodashboard",
 ]
 
+CONTRATOS_URL = "https://web.foccolojas.com.br/criare/servlet/wbpvencontratos"
 CONTRATOS_URL_PARTS = [
     "/criare/wbpvencontratos",
     "/criare/servlet/wbpvencontratos",
@@ -98,36 +99,32 @@ def garantir_login(page):
 
 
 def abrir_contratos(page):
-    seletores = [
-        'a[href="wbpvencontratos"]',
-        'a[href*="wbpvencontratos"]',
-        'a:has-text("Contratos")',
-        'text=Contratos',
-    ]
-
-    clicou = False
-
-    for seletor in seletores:
-        try:
-            loc = page.locator(seletor).first
-            loc.wait_for(state="attached", timeout=4000)
-            loc.click(force=True)
-            clicou = True
-            break
-        except Exception:
-            pass
-
-    if not clicou:
-        raise Exception("Não foi possível clicar no menu Contratos")
-
+    page.goto(CONTRATOS_URL, wait_until="networkidle", timeout=90000)
     page.wait_for_timeout(6000)
 
     if not is_contratos_page(page):
-        page.goto("https://web.foccolojas.com.br/criare/wbpvencontratos", wait_until="networkidle", timeout=90000)
-        page.wait_for_timeout(6000)
-
-    if not is_contratos_page(page):
         raise Exception(f"Página de contratos não foi confirmada. URL final: {page.url}")
+
+
+def limpar_filtros_se_disponivel(page):
+    tentativas = [
+        "#LIMPARFILTROS",
+        'a[id="LIMPARFILTROS"]',
+        'a:has-text("Limpar Filtros")',
+        'text=Limpar Filtros',
+    ]
+
+    for seletor in tentativas:
+        try:
+            loc = page.locator(seletor).first
+            if loc.count() > 0:
+                loc.click(force=True)
+                page.wait_for_timeout(4000)
+                return True
+        except Exception:
+            pass
+
+    return False
 
 
 def extrair_texto_celula(cells, idx):
@@ -141,7 +138,6 @@ def extrair_texto_celula(cells, idx):
 
 def listar_contratos_visiveis(page, max_linhas=30):
     contratos = []
-
     linhas = page.locator("table tr").all()
 
     for linha in linhas:
@@ -203,6 +199,7 @@ def main():
         "url_inicial": FOCCO_URL,
         "url_final": None,
         "login_status": None,
+        "filtros_limpos": False,
         "quantidade_contratos_visiveis": 0,
         "contratos": [],
         "mensagem": ""
@@ -225,6 +222,8 @@ def main():
             resultado["login_status"] = garantir_login(page)
 
             abrir_contratos(page)
+
+            resultado["filtros_limpos"] = limpar_filtros_se_disponivel(page)
 
             contratos = listar_contratos_visiveis(page, max_linhas=30)
 
