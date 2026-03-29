@@ -35,59 +35,22 @@ def main():
 
         try:
             page.goto(FOCCO_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000)
+            page.wait_for_timeout(4000)
 
-            # pega somente inputs visíveis
-            visible_inputs = []
-            for inp in page.locator("input").all():
-                try:
-                    if inp.is_visible():
-                        input_type = (inp.get_attribute("type") or "").lower()
-                        visible_inputs.append((inp, input_type))
-                except Exception:
-                    pass
+            usuario = page.locator("#vIPN_USU_LOGIN")
+            senha = page.locator("#vIPN_USU_SENHA")
+            entrar = page.locator("#BTNLOGIN")
 
-            text_like = [inp for inp, t in visible_inputs if t in ("text", "email", "")]
-            password_like = [inp for inp, t in visible_inputs if t == "password"]
-
-            if not text_like:
-                raise Exception("Nenhum campo visível de usuário/email encontrado")
-
-            if not password_like:
-                raise Exception("Nenhum campo visível de senha encontrado")
-
-            usuario = text_like[0]
-            senha = password_like[0]
+            usuario.wait_for(state="visible", timeout=15000)
+            senha.wait_for(state="visible", timeout=15000)
+            entrar.wait_for(state="visible", timeout=15000)
 
             usuario.fill(FOCCO_USERNAME)
             senha.fill(FOCCO_PASSWORD)
 
-            entrou = False
+            entrar.click()
 
-            # tenta clicar no botão ENTRAR visível
-            possible_buttons = [
-                page.get_by_role("button", name="ENTRAR"),
-                page.get_by_role("button", name="Entrar"),
-                page.locator("button:has-text('ENTRAR')").first,
-                page.locator("button:has-text('Entrar')").first,
-                page.locator("input[type='submit']").first,
-                page.locator("text=ENTRAR").first,
-                page.locator("text=Entrar").first,
-            ]
-
-            for botao in possible_buttons:
-                try:
-                    if botao.is_visible(timeout=2000):
-                        botao.click()
-                        entrou = True
-                        break
-                except Exception:
-                    pass
-
-            if not entrou:
-                page.keyboard.press("Enter")
-
-            page.wait_for_timeout(7000)
+            page.wait_for_timeout(8000)
             resultado["url_final"] = page.url
 
             context.storage_state(path=str(STORAGE_FILE))
