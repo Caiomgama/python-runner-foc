@@ -6,7 +6,6 @@ FOCCO_URL = os.getenv("FOCCO_URL", "https://web.foccolojas.com.br/")
 FOCCO_USERNAME = os.getenv("FOCCO_USERNAME", "")
 FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 
-LOGIN_URL_PART = "/criare/servlet/hipnlojas3"
 DASHBOARD_URL_PART = "/criare/servlet/wbpnucadashboard"
 
 
@@ -14,19 +13,19 @@ def is_dashboard(page):
     return DASHBOARD_URL_PART in (page.url or "")
 
 
-def has_login_form(page):
-    try:
-        return (
-            page.locator("#vIPN_USU_LOGIN").count() > 0 and
-            page.locator("#vIPN_USU_SENHA").count() > 0 and
-            page.locator("#BTNLOGIN").count() > 0
-        )
-    except Exception:
-        return False
+def find_in_any_frame(page, selector: str, timeout_ms: int = 3000):
+    for frame in page.frames:
+        try:
+            loc = frame.locator(selector).first
+            loc.wait_for(state="attached", timeout=timeout_ms)
+            return frame, loc
+        except Exception:
+            pass
+    return None, None
 
 
-def set_input_value(page, selector, value):
-    page.eval_on_selector(
+def set_value(frame, selector, value):
+    frame.eval_on_selector(
         selector,
         """
         (el, value) => {
@@ -40,6 +39,31 @@ def set_input_value(page, selector, value):
     )
 
 
+def has_login_form(page):
+    frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 2000)
+    frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 2000)
+    frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 2000)
+    return frame_user is not None and frame_pass is not None and frame_btn is not None
+
+
+def do_login(page):
+    frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 5000)
+    frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 5000)
+    frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 5000)
+
+    if not frame_user:
+        raise Exception("Campo usuário não encontrado em nenhum frame")
+    if not frame_pass:
+        raise Exception("Campo senha não encontrado em nenhum frame")
+    if not frame_btn:
+        raise Exception("Botão entrar não encontrado em nenhum frame")
+
+    set_value(frame_user, "#vIPN_USU_LOGIN", FOCCO_USERNAME)
+    set_value(frame_pass, "#vIPN_USU_SENHA", FOCCO_PASSWORD)
+
+    frame_btn.locator("#BTNLOGIN").click(force=True)
+
+
 def main():
     resultado = {
         "success": False,
@@ -47,6 +71,7 @@ def main():
         "url_final": None,
         "already_logged_in": False,
         "login_executed": False,
+        "frames": [],
         "mensagem": ""
     }
 
@@ -67,7 +92,8 @@ def main():
             page.goto(FOCCO_URL, wait_until="networkidle", timeout=90000)
             page.wait_for_timeout(5000)
 
-            # Caso 1: já está logado
+            resultado["frames"] = [f.url for f in page.frames]
+
             if is_dashboard(page):
                 resultado["success"] = True
                 resultado["already_logged_in"] = True
@@ -77,13 +103,8 @@ def main():
                 print(json.dumps(resultado, ensure_ascii=False))
                 return
 
-            # Caso 2: está na tela de login
             if has_login_form(page):
-                set_input_value(page, "#vIPN_USU_LOGIN", FOCCO_USERNAME)
-                set_input_value(page, "#vIPN_USU_SENHA", FOCCO_PASSWORD)
-
-                page.wait_for_timeout(1000)
-                page.locator("#BTNLOGIN").click(force=True)
+                do_login(page)
                 page.wait_for_timeout(8000)
 
                 resultado["url_final"] = page.url
@@ -99,7 +120,6 @@ def main():
                 print(json.dumps(resultado, ensure_ascii=False))
                 return
 
-            # Caso 3: estado inesperado
             resultado["url_final"] = page.url
             resultado["mensagem"] = "Página abriu, mas não estava nem no dashboard nem no formulário de login"
 
