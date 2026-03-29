@@ -336,12 +336,20 @@ def _mapear_contrato(row_data, frame_url):
     return contrato
 
 
+def _limpar_texto(valor):
+    if valor is None:
+        return None
+    return " ".join(str(valor).split()).strip()
+
+
 def extrair_contratos_visiveis(page):
     contratos = []
     vistos = set()
 
     script = """
     () => {
+        const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
+
         const isVisible = (el) => {
             if (!el) return false;
             const style = window.getComputedStyle(el);
@@ -354,34 +362,37 @@ def extrair_contratos_visiveis(page):
             );
         };
 
-        const links = Array.from(document.querySelectorAll('a[href*="wbpvencontrato"]'))
-            .filter(a => isVisible(a));
+        const rows = Array.from(document.querySelectorAll('div[id^="GridContainerRow_"]'))
+            .filter(row => isVisible(row));
 
-        return links.map((a) => {
-            const numero = (a.innerText || a.textContent || '').trim();
-            const href = a.getAttribute('href') || '';
-            const tr = a.closest('tr');
+        const resultado = [];
 
-            let cells = [];
-            let rowText = '';
+        for (const row of rows) {
+            const linkContrato = row.querySelector('a[href*="wbpvencontrato"]');
+            if (!linkContrato || !isVisible(linkContrato)) continue;
 
-            if (tr) {
-                cells = Array.from(tr.querySelectorAll('td, th'))
-                    .map(el => (el.innerText || el.textContent || '').trim())
-                    .filter(Boolean);
-                rowText = (tr.innerText || tr.textContent || '').trim();
-            } else {
-                const parent = a.parentElement;
-                rowText = parent ? (parent.innerText || parent.textContent || '').trim() : numero;
-            }
+            const numeroContrato = normalizar(linkContrato.innerText || linkContrato.textContent || '');
+            const href = linkContrato.getAttribute('href') || '';
 
-            return {
-                numero_contrato: numero,
+            if (!numeroContrato) continue;
+
+            const visibleTds = Array.from(row.querySelectorAll('td'))
+                .filter(td => isVisible(td));
+
+            const cells = visibleTds
+                .map(td => normalizar(td.innerText || td.textContent || ''))
+                .filter(txt => txt);
+
+            resultado.push({
+                row_id: row.id || '',
+                numero_contrato: numeroContrato,
                 href,
                 cells,
-                row_text: rowText
-            };
-        });
+                row_text: normalizar(row.innerText || row.textContent || '')
+            });
+        }
+
+        return resultado;
     }
     """
 
@@ -392,8 +403,9 @@ def extrair_contratos_visiveis(page):
             continue
 
         for row in rows:
-            numero = (row.get("numero_contrato") or "").strip()
-            href = (row.get("href") or "").strip()
+            numero = _limpar_texto(row.get("numero_contrato"))
+            href = _limpar_texto(row.get("href"))
+            cells = row.get("cells") or []
 
             if not numero:
                 continue
@@ -403,49 +415,38 @@ def extrair_contratos_visiveis(page):
                 continue
 
             vistos.add(chave)
-            contratos.append(_mapear_contrato(row, frame.url))
 
-    if not contratos:
-        for frame in page.frames:
-            try:
-                links = frame.locator("a[href*='wbpvencontrato']")
-                total = links.count()
+            # Esperado no modo tela cheia:
+            # 0 contrato
+            # 1 projeto
+            # 2 cliente
+            # 3 consultor
+            # 4 executor
+            # 5 valor_venda
+            # 6 situacao
+            # 7 assinatura
+            # 8 previsao_entrega
+            contrato = {
+                "numero_contrato": numero,
+                "url_contrato": urljoin(frame.url, href) if href else None,
+                "projeto": _limpar_texto(cells[1]) if len(cells) > 1 else None,
+                "cliente": _limpar_texto(cells[2]) if len(cells) > 2 else None,
+                "consultor": _limpar_texto(cells[3]) if len(cells) > 3 else None,
+                "executor": _limpar_texto(cells[4]) if len(cells) > 4 else None,
+                "valor_venda": _limpar_texto(cells[5]) if len(cells) > 5 else None,
+                "situacao": _limpar_texto(cells[6]) if len(cells) > 6 else None,
+                "assinatura": _limpar_texto(cells[7]) if len(cells) > 7 else None,
+                "previsao_entrega": _limpar_texto(cells[8]) if len(cells) > 8 else None,
+                "row_text": _limpar_texto(row.get("row_text")),
+                "debug_cells": cells,
+                "row_id": row.get("row_id"),
+            }
 
-                for i in range(total):
-                    try:
-                        loc = links.nth(i)
-                        numero = (loc.inner_text(timeout=1000) or "").strip()
-                        href = loc.get_attribute("href") or ""
-
-                        if not numero:
-                            continue
-
-                        chave = f"{numero}|{href}"
-                        if chave in vistos:
-                            continue
-
-                        vistos.add(chave)
-                        contratos.append({
-                            "numero_contrato": numero,
-                            "url_contrato": urljoin(frame.url, href) if href else None,
-                            "projeto": None,
-                            "cliente": None,
-                            "consultor": None,
-                            "executor": None,
-                            "valor_venda": None,
-                            "situacao": None,
-                            "assinatura": None,
-                            "previsao_entrega": None,
-                            "row_text": numero,
-                        })
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+            contratos.append(contrato)
 
     def ordenar(c):
         n = c.get("numero_contrato") or ""
-        return int(n) if n.isdigit() else 999999999
+        return int(n) if str(n).isdigit() else 999999999
 
     contratos.sort(key=ordenar)
     return contratos
