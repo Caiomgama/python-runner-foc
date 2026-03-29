@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
 
@@ -150,6 +151,110 @@ def limpar_filtros_se_existir(page):
         }
 
 
+def ajustar_linhas_por_pagina(page, valor="120"):
+    valor = str(valor)
+
+    script = """
+    (valor) => {
+        const textoAlvo = String(valor).trim();
+
+        const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return (
+                style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                rect.width > 0 &&
+                rect.height > 0
+            );
+        };
+
+        const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
+
+        const abrirPorTexto = () => {
+            const elementos = Array.from(document.querySelectorAll('div, span, a, button'));
+            for (const el of elementos) {
+                const txt = normalizar(el.innerText || el.textContent || '');
+                if (txt === 'Linhas por página:' && isVisible(el)) {
+                    const clicaveis = [
+                        el.nextElementSibling,
+                        el.parentElement,
+                        el.closest('div'),
+                    ].filter(Boolean);
+
+                    for (const c of clicaveis) {
+                        try {
+                            c.click();
+                        } catch (e) {}
+                    }
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const clicarOpcao = () => {
+            const candidatos = Array.from(document.querySelectorAll('li, div, span, a, option'));
+            for (const el of candidatos) {
+                const txt = normalizar(el.innerText || el.textContent || '');
+                if (txt === textoAlvo && isVisible(el)) {
+                    try {
+                        el.click();
+                        return true;
+                    } catch (e) {}
+                }
+            }
+            return false;
+        };
+
+        const selects = Array.from(document.querySelectorAll('select')).filter(isVisible);
+        for (const sel of selects) {
+            const options = Array.from(sel.options || []).map(o => normalizar(o.text));
+            if (options.includes(textoAlvo)) {
+                sel.value = Array.from(sel.options).find(o => normalizar(o.text) === textoAlvo).value;
+                sel.dispatchEvent(new Event('input', { bubbles: true }));
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+                return { alterado: true, modo: 'select' };
+            }
+        }
+
+        abrirPorTexto();
+        const clicouOpcao = clicarOpcao();
+        if (clicouOpcao) {
+            return { alterado: true, modo: 'menu' };
+        }
+
+        return { alterado: false, modo: null };
+    }
+    """
+
+    for frame in page.frames:
+        try:
+            res = frame.evaluate(script, valor)
+            if res and res.get("alterado"):
+                page.wait_for_timeout(3000)
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
+                return {
+                    "alterado": True,
+                    "valor": valor,
+                    "mensagem": f"Linhas por página ajustado para {valor}",
+                    "modo": res.get("modo"),
+                }
+        except Exception:
+            pass
+
+    return {
+        "alterado": False,
+        "valor": None,
+        "mensagem": "Não foi possível ajustar linhas por página",
+        "modo": None,
+    }
+
+
 def obter_info_paginacao(page):
     info = {
         "linhas_por_pagina": None,
@@ -166,8 +271,6 @@ def obter_info_paginacao(page):
                     trecho = partes[1].strip().splitlines()[0].strip()
                     info["linhas_por_pagina"] = trecho.split()[0]
 
-            # exemplo visual: 1-10 de 10
-            import re
             m = re.search(r"\b\d+\s*-\s*\d+\s+de\s+\d+\b", texto)
             if m and info["intervalo_pagina"] is None:
                 info["intervalo_pagina"] = m.group(0)
@@ -183,13 +286,10 @@ def _normalizar_celulas(cells, numero_contrato):
     if not cells:
         return cells
 
-    # remove primeira célula de ícone/ação, se existir
     if cells and cells[0] != numero_contrato and not cells[0].isdigit():
-        # só remove se o número aparecer depois
         if numero_contrato in cells[1:]:
             cells = cells[1:]
 
-    # corta a partir do número do contrato
     if numero_contrato in cells:
         idx = cells.index(numero_contrato)
         cells = cells[idx:]
@@ -216,8 +316,6 @@ def _mapear_contrato(row_data, frame_url):
         "row_text": row_data.get("row_text"),
     }
 
-    # esperado:
-    # [numero, projeto, cliente, consultor, executor, valor, situacao, assinatura, previsao]
     if len(cells) >= 2:
         contrato["projeto"] = cells[1]
     if len(cells) >= 3:
@@ -307,7 +405,6 @@ def extrair_contratos_visiveis(page):
             vistos.add(chave)
             contratos.append(_mapear_contrato(row, frame.url))
 
-    # fallback: se não conseguiu montar por tr, tenta só pelos links
     if not contratos:
         for frame in page.frames:
             try:
@@ -346,7 +443,6 @@ def extrair_contratos_visiveis(page):
             except Exception:
                 pass
 
-    # ordena por número quando possível
     def ordenar(c):
         n = c.get("numero_contrato") or ""
         return int(n) if n.isdigit() else 999999999
@@ -365,6 +461,8 @@ def main():
         "tela_contratos_aberta": False,
         "limpar_filtros_encontrado": False,
         "limpar_filtros_clicado": False,
+        "linhas_por_pagina_ajustado": False,
+        "linhas_por_pagina_mensagem": "",
         "paginacao": {},
         "total_contratos_visiveis": 0,
         "contratos": [],
@@ -403,6 +501,10 @@ def main():
             acao_limpar = limpar_filtros_se_existir(page)
             resultado["limpar_filtros_encontrado"] = acao_limpar["encontrado"]
             resultado["limpar_filtros_clicado"] = acao_limpar["clicado"]
+
+            ajuste_pagina = ajustar_linhas_por_pagina(page, "120")
+            resultado["linhas_por_pagina_ajustado"] = ajuste_pagina["alterado"]
+            resultado["linhas_por_pagina_mensagem"] = ajuste_pagina["mensagem"]
 
             resultado["paginacao"] = obter_info_paginacao(page)
             resultado["contratos"] = extrair_contratos_visiveis(page)
