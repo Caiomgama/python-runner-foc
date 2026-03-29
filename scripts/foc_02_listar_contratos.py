@@ -7,16 +7,13 @@ FOCCO_USERNAME = os.getenv("FOCCO_USERNAME", "")
 FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 
 DASHBOARD_URL_PARTS = [
-    "/criare/servlet/wbpnucadashboard",
-    "/criare/servlet/wbpnucnovdashboard",
     "/criare/servlet/wbpnucnovodashboard",
 ]
 
-CONTRATOS_URL = "https://web.foccolojas.com.br/criare/servlet/wbpvencontratos"
-CONTRATOS_URL_PARTS = [
-    "/criare/wbpvencontratos",
-    "/criare/servlet/wbpvencontratos",
-]
+CONTRATOS_URL = os.getenv(
+    "FOCCO_CONTRATOS_URL",
+    "https://web.foccolojas.com.br/criare/wbpvencontratos"
+)
 
 
 def is_dashboard(page):
@@ -24,9 +21,9 @@ def is_dashboard(page):
     return any(part in url for part in DASHBOARD_URL_PARTS)
 
 
-def is_contratos_page(page):
+def is_contrato_aberto(page):
     url = page.url or ""
-    return any(part in url for part in CONTRATOS_URL_PARTS)
+    return "/criare/wbpvencontrato" in url
 
 
 def find_in_any_frame(page, selector: str, timeout_ms: int = 3000):
@@ -51,7 +48,7 @@ def set_value(frame, selector, value):
             el.dispatchEvent(new Event('blur', { bubbles: true }));
         }
         """,
-        value
+        value,
     )
 
 
@@ -59,7 +56,12 @@ def has_login_form(page):
     frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 2000)
     frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 2000)
     frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 2000)
-    return frame_user is not None and frame_pass is not None and frame_btn is not None
+
+    return (
+        frame_user is not None
+        and frame_pass is not None
+        and frame_btn is not None
+    )
 
 
 def do_login(page):
@@ -69,8 +71,10 @@ def do_login(page):
 
     if not frame_user:
         raise Exception("Campo usuário não encontrado em nenhum frame")
+
     if not frame_pass:
         raise Exception("Campo senha não encontrado em nenhum frame")
+
     if not frame_btn:
         raise Exception("Botão entrar não encontrado em nenhum frame")
 
@@ -79,118 +83,109 @@ def do_login(page):
     frame_btn.locator("#BTNLOGIN").click(force=True)
 
 
-def garantir_login(page):
+def abrir_tela_contratos(page):
+    page.goto(CONTRATOS_URL, wait_until="networkidle", timeout=90000)
+    page.wait_for_timeout(5000)
+
+
+def listar_links_para_debug(page, limite=20):
+    links = []
+
+    for frame in page.frames:
+        try:
+            anchors = frame.locator("a")
+            total = anchors.count()
+
+            for i in range(min(total, limite)):
+                try:
+                    a = anchors.nth(i)
+                    texto = (a.inner_text(timeout=1000) or "").strip()
+                    href = a.get_attribute("href")
+                    if texto or href:
+                        links.append({
+                            "frame_url": frame.url,
+                            "text": texto,
+                            "href": href,
+                        })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    return links[:limite]
+
+
+def encontrar_primeiro_contrato(page):
+    seletores = [
+        "a[href*='wbpvencontrato?']",
+        "a[href*='wbpvencontrato']",
+        "a[onclick*='wbpvencontrato']",
+    ]
+
+    for selector in seletores:
+        for frame in page.frames:
+            try:
+                loc = frame.locator(selector).first
+                if loc.count() > 0:
+                    href = loc.get_attribute("href")
+                    texto = ""
+                    try:
+                        texto = (loc.inner_text(timeout=1000) or "").strip()
+                    except Exception:
+                        pass
+                    return frame, loc, {
+                        "selector": selector,
+                        "href": href,
+                        "text": texto,
+                        "frame_url": frame.url,
+                    }
+            except Exception:
+                pass
+
+    return None, None, None
+
+
+def clicar_primeiro_contrato(page):
+    frame, loc, info = encontrar_primeiro_contrato(page)
+
+    if not loc:
+        return {
+            "success": False,
+            "mensagem": "Nenhum link de contrato foi encontrado na tela de contratos",
+            "contrato_info": None,
+        }
+
+    try:
+        with page.expect_navigation(wait_until="networkidle", timeout=30000):
+            loc.click(force=True)
+    except Exception:
+        loc.click(force=True)
+        page.wait_for_timeout(5000)
+
+    return {
+        "success": True,
+        "mensagem": "Clique no primeiro contrato executado",
+        "contrato_info": info,
+    }
+
+
+def garantir_login(page, resultado):
     page.goto(FOCCO_URL, wait_until="networkidle", timeout=90000)
     page.wait_for_timeout(5000)
 
+    resultado["frames_login"] = [f.url for f in page.frames]
+
     if is_dashboard(page):
-        return "ja_logado"
+        resultado["already_logged_in"] = True
+        return True
 
     if has_login_form(page):
         do_login(page)
         page.wait_for_timeout(8000)
-
-        if is_dashboard(page):
-            return "login_executado"
-
-        raise Exception(f"Login executado, mas dashboard não foi confirmado. URL final: {page.url}")
-
-    raise Exception(f"Página abriu, mas não estava nem no dashboard nem no formulário de login. URL final: {page.url}")
-
-
-def abrir_contratos(page):
-    page.goto(CONTRATOS_URL, wait_until="networkidle", timeout=90000)
-    page.wait_for_timeout(6000)
-
-    if not is_contratos_page(page):
-        raise Exception(f"Página de contratos não foi confirmada. URL final: {page.url}")
-
-
-def limpar_filtros_se_disponivel(page):
-    tentativas = [
-        "#LIMPARFILTROS",
-        'a[id="LIMPARFILTROS"]',
-        'a:has-text("Limpar Filtros")',
-        'text=Limpar Filtros',
-    ]
-
-    for seletor in tentativas:
-        try:
-            loc = page.locator(seletor).first
-            if loc.count() > 0:
-                loc.click(force=True)
-                page.wait_for_timeout(4000)
-                return True
-        except Exception:
-            pass
+        resultado["login_executed"] = True
+        return is_dashboard(page)
 
     return False
-
-
-def extrair_texto_celula(cells, idx):
-    if idx >= len(cells):
-        return ""
-    try:
-        return cells[idx].inner_text().strip()
-    except Exception:
-        return ""
-
-
-def listar_contratos_visiveis(page, max_linhas=30):
-    contratos = []
-    linhas = page.locator("table tr").all()
-
-    for linha in linhas:
-        try:
-            if not linha.is_visible():
-                continue
-
-            cells = linha.locator("td").all()
-            if len(cells) < 8:
-                continue
-
-            numero = extrair_texto_celula(cells, 1)
-            projeto = extrair_texto_celula(cells, 2)
-            cliente = extrair_texto_celula(cells, 3)
-            consultor = extrair_texto_celula(cells, 4)
-            executor = extrair_texto_celula(cells, 5)
-            valor_venda = extrair_texto_celula(cells, 6)
-            situacao = extrair_texto_celula(cells, 7)
-            assinatura = extrair_texto_celula(cells, 8)
-            previsao_entrega = extrair_texto_celula(cells, 9)
-
-            if not numero or not numero.strip().isdigit():
-                continue
-
-            link_contrato = None
-            try:
-                link = cells[1].locator("a").first
-                href = link.get_attribute("href")
-                if href:
-                    link_contrato = href
-            except Exception:
-                pass
-
-            contratos.append({
-                "numero_contrato": numero,
-                "projeto": projeto,
-                "cliente": cliente,
-                "consultor": consultor,
-                "executor": executor,
-                "valor_venda": valor_venda,
-                "situacao": situacao,
-                "assinatura": assinatura,
-                "previsao_entrega": previsao_entrega,
-                "link_contrato": link_contrato,
-            })
-
-            if len(contratos) >= max_linhas:
-                break
-
-        except Exception:
-            pass
-
-    return contratos
 
 
 def main():
@@ -198,11 +193,15 @@ def main():
         "success": False,
         "url_inicial": FOCCO_URL,
         "url_final": None,
-        "login_status": None,
-        "filtros_limpos": False,
-        "quantidade_contratos_visiveis": 0,
-        "contratos": [],
-        "mensagem": ""
+        "already_logged_in": False,
+        "login_executed": False,
+        "tela_contratos_aberta": False,
+        "contrato_aberto": False,
+        "contrato_info": None,
+        "frames_login": [],
+        "frames_contratos": [],
+        "debug_links": [],
+        "mensagem": "",
     }
 
     if not FOCCO_USERNAME or not FOCCO_PASSWORD:
@@ -216,31 +215,56 @@ def main():
         browser = p.chromium.launch(headless=True)
 
         try:
-            context = browser.new_context(viewport={"width": 1600, "height": 900})
+            context = browser.new_context(
+                viewport={"width": 1600, "height": 900}
+            )
             page = context.new_page()
 
-            resultado["login_status"] = garantir_login(page)
+            ok_login = garantir_login(page, resultado)
 
-            abrir_contratos(page)
+            if not ok_login:
+                resultado["url_final"] = page.url
+                resultado["mensagem"] = "Não foi possível confirmar o login antes de abrir contratos"
+                print(json.dumps(resultado, ensure_ascii=False))
+                return
 
-            resultado["filtros_limpos"] = limpar_filtros_se_disponivel(page)
+            abrir_tela_contratos(page)
+            resultado["frames_contratos"] = [f.url for f in page.frames]
+            resultado["debug_links"] = listar_links_para_debug(page, limite=20)
+            resultado["tela_contratos_aberta"] = "/criare/wbpvencontratos" in (page.url or "")
 
-            contratos = listar_contratos_visiveis(page, max_linhas=30)
+            clique = clicar_primeiro_contrato(page)
 
-            resultado["success"] = True
+            if not clique["success"]:
+                resultado["url_final"] = page.url
+                resultado["mensagem"] = clique["mensagem"]
+                resultado["contrato_info"] = clique["contrato_info"]
+                print(json.dumps(resultado, ensure_ascii=False))
+                return
+
+            page.wait_for_timeout(5000)
+
             resultado["url_final"] = page.url
-            resultado["contratos"] = contratos
-            resultado["quantidade_contratos_visiveis"] = len(contratos)
-            resultado["mensagem"] = "Lista de contratos carregada com sucesso"
+            resultado["contrato_info"] = clique["contrato_info"]
+
+            if is_contrato_aberto(page):
+                resultado["success"] = True
+                resultado["contrato_aberto"] = True
+                resultado["mensagem"] = "Contrato aberto com sucesso"
+            else:
+                resultado["success"] = False
+                resultado["contrato_aberto"] = False
+                resultado["mensagem"] = "Cliquei no contrato, mas a URL final não confirmou a abertura"
+
+            print(json.dumps(resultado, ensure_ascii=False))
 
         except Exception as e:
             resultado["url_final"] = page.url if "page" in locals() and page else None
-            resultado["mensagem"] = f"Erro ao listar contratos: {str(e)}"
+            resultado["mensagem"] = f"Erro ao abrir contrato: {str(e)}"
+            print(json.dumps(resultado, ensure_ascii=False))
 
         finally:
             browser.close()
-
-    print(json.dumps(resultado, ensure_ascii=False))
 
 
 if __name__ == "__main__":
