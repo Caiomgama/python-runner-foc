@@ -75,7 +75,6 @@ def do_login(page):
 
     set_value(frame_user, "#vIPN_USU_LOGIN", FOCCO_USERNAME)
     set_value(frame_pass, "#vIPN_USU_SENHA", FOCCO_PASSWORD)
-
     frame_btn.locator("#BTNLOGIN").click(force=True)
 
 
@@ -96,28 +95,128 @@ def garantir_login(page, resultado):
     return False
 
 
+def obter_estado_tela_contratos(page):
+    estado = {
+        "pesquisa_valor": None,
+        "qtd_linhas": 0,
+        "primeiro_contrato": None,
+    }
+
+    for frame in page.frames:
+        try:
+            try:
+                pesquisa = frame.locator("input[placeholder='Pesquisar']").first
+                if pesquisa.count() > 0:
+                    estado["pesquisa_valor"] = pesquisa.input_value(timeout=1000)
+            except Exception:
+                pass
+
+            try:
+                contratos = frame.locator("a[href*='wbpvencontrato']")
+                qtd = contratos.count()
+
+                if qtd > estado["qtd_linhas"]:
+                    estado["qtd_linhas"] = qtd
+
+                if qtd > 0 and not estado["primeiro_contrato"]:
+                    try:
+                        estado["primeiro_contrato"] = contratos.nth(0).inner_text(timeout=1000).strip()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    return estado
+
+
+def obter_estado_limpar_filtros(page):
+    seletores = [
+        "#DIVLIMPAFILTRO",
+        "#DIVLIMPARFILTRO",
+        "#LIMPARFILTROS",
+        "[data-gx-cntrl='LIMPARFILTROS']",
+    ]
+
+    estado = {
+        "existe": False,
+        "visivel": False,
+        "gx_invisible": False,
+        "display_none": False,
+        "selector_usado": None,
+    }
+
+    for selector in seletores:
+        frame, loc = find_in_any_frame(page, selector, 1000)
+
+        if not loc:
+            continue
+
+        estado["existe"] = True
+        estado["selector_usado"] = selector
+
+        try:
+            estado["visivel"] = loc.is_visible()
+        except Exception:
+            estado["visivel"] = False
+
+        try:
+            classes = (loc.get_attribute("class") or "").lower()
+        except Exception:
+            classes = ""
+
+        try:
+            style = (loc.get_attribute("style") or "").replace(" ", "").lower()
+        except Exception:
+            style = ""
+
+        estado["gx_invisible"] = "gx-invisible" in classes
+        estado["display_none"] = "display:none" in style
+
+        return estado
+
+    return estado
+
+
+def encontrar_link_limpar_filtros(page):
+    seletores = [
+        "#DIVLIMPAFILTRO a",
+        "#DIVLIMPARFILTRO a",
+        "#LIMPARFILTROS a",
+        "a:has-text('Limpar Filtros')",
+        "a:has-text('LIMPAR FILTROS')",
+    ]
+
+    for frame in page.frames:
+        for selector in seletores:
+            try:
+                loc = frame.locator(selector).first
+                if loc.count() > 0:
+                    return frame, loc, selector
+            except Exception:
+                pass
+
+    return None, None, None
+
+
 def limpar_filtros_se_existir(page):
-    frame, loc = find_in_any_frame(page, "#LIMPARFILTROS", 2000)
+    antes_botao = obter_estado_limpar_filtros(page)
+    antes_tela = obter_estado_tela_contratos(page)
+
+    frame, loc, selector = encontrar_link_limpar_filtros(page)
 
     if not loc:
         return {
-            "encontrado_antes": False,
+            "encontrado_antes": antes_botao["existe"],
             "clicado": False,
             "sumiu_depois": False,
-            "mensagem": "Botão limpar filtros não encontrado antes do clique"
-        }
-
-    try:
-        visivel_antes = loc.is_visible()
-    except Exception:
-        visivel_antes = True
-
-    if not visivel_antes:
-        return {
-            "encontrado_antes": True,
-            "clicado": False,
-            "sumiu_depois": False,
-            "mensagem": "Botão limpar filtros foi encontrado, mas não estava visível"
+            "houve_mudanca_na_tela": False,
+            "estado_antes": antes_tela,
+            "estado_depois": antes_tela,
+            "estado_botao_antes": antes_botao,
+            "estado_botao_depois": antes_botao,
+            "mensagem": "Link limpar filtros não encontrado para clique"
         }
 
     try:
@@ -128,31 +227,48 @@ def limpar_filtros_se_existir(page):
             page.wait_for_timeout(5000)
     except Exception as e:
         return {
-            "encontrado_antes": True,
+            "encontrado_antes": antes_botao["existe"],
             "clicado": False,
             "sumiu_depois": False,
-            "mensagem": f"Botão limpar filtros encontrado, mas erro ao clicar: {str(e)}"
+            "houve_mudanca_na_tela": False,
+            "estado_antes": antes_tela,
+            "estado_depois": antes_tela,
+            "estado_botao_antes": antes_botao,
+            "estado_botao_depois": antes_botao,
+            "mensagem": f"Erro ao clicar em limpar filtros: {str(e)}"
         }
 
-    frame_depois, loc_depois = find_in_any_frame(page, "#LIMPARFILTROS", 3000)
+    depois_botao = obter_estado_limpar_filtros(page)
+    depois_tela = obter_estado_tela_contratos(page)
 
-    sumiu_depois = loc_depois is None
+    sumiu_depois = (
+        (not depois_botao["visivel"])
+        or depois_botao["gx_invisible"]
+        or depois_botao["display_none"]
+        or (not depois_botao["existe"])
+    )
 
-    if not sumiu_depois and loc_depois is not None:
-        try:
-            sumiu_depois = not loc_depois.is_visible()
-        except Exception:
-            sumiu_depois = False
+    houve_mudanca_na_tela = antes_tela != depois_tela
+
+    if sumiu_depois and houve_mudanca_na_tela:
+        mensagem = "Limpar filtros funcionou: botão ficou oculto e a tela mudou"
+    elif sumiu_depois:
+        mensagem = "Limpar filtros provavelmente funcionou: botão ficou oculto"
+    elif houve_mudanca_na_tela:
+        mensagem = "Limpar filtros provavelmente funcionou: a tela mudou após o clique"
+    else:
+        mensagem = "Clique executado, mas sem evidência forte de limpeza"
 
     return {
-        "encontrado_antes": True,
+        "encontrado_antes": antes_botao["existe"],
         "clicado": True,
         "sumiu_depois": sumiu_depois,
-        "mensagem": (
-            "Botão limpar filtros foi clicado e sumiu depois"
-            if sumiu_depois
-            else "Botão limpar filtros foi clicado, mas continuou visível depois"
-        )
+        "houve_mudanca_na_tela": houve_mudanca_na_tela,
+        "estado_antes": antes_tela,
+        "estado_depois": depois_tela,
+        "estado_botao_antes": antes_botao,
+        "estado_botao_depois": depois_botao,
+        "mensagem": mensagem
     }
 
 
@@ -167,6 +283,11 @@ def main():
         "limpar_filtros_encontrado": False,
         "limpar_filtros_clicado": False,
         "limpar_filtros_sumiu_depois": False,
+        "houve_mudanca_na_tela": False,
+        "estado_antes": {},
+        "estado_depois": {},
+        "estado_botao_antes": {},
+        "estado_botao_depois": {},
         "mensagem": ""
     }
 
@@ -204,6 +325,11 @@ def main():
             resultado["limpar_filtros_encontrado"] = acao_limpar["encontrado_antes"]
             resultado["limpar_filtros_clicado"] = acao_limpar["clicado"]
             resultado["limpar_filtros_sumiu_depois"] = acao_limpar["sumiu_depois"]
+            resultado["houve_mudanca_na_tela"] = acao_limpar["houve_mudanca_na_tela"]
+            resultado["estado_antes"] = acao_limpar["estado_antes"]
+            resultado["estado_depois"] = acao_limpar["estado_depois"]
+            resultado["estado_botao_antes"] = acao_limpar["estado_botao_antes"]
+            resultado["estado_botao_depois"] = acao_limpar["estado_botao_depois"]
             resultado["url_final"] = page.url
 
             if resultado["tela_contratos_aberta"]:
