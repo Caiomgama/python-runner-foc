@@ -12,6 +12,20 @@ SESSION_DIR.mkdir(parents=True, exist_ok=True)
 STORAGE_FILE = SESSION_DIR / "focco_storage.json"
 
 
+def set_input_value(page, selector, value):
+    page.eval_on_selector(
+        selector,
+        """
+        (el, value) => {
+            el.value = value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        """,
+        value
+    )
+
+
 def main():
     if not FOCCO_USERNAME or not FOCCO_PASSWORD:
         print(json.dumps({
@@ -35,20 +49,21 @@ def main():
 
         try:
             page.goto(FOCCO_URL, wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(4000)
+            page.wait_for_timeout(5000)
 
-            usuario = page.locator("#vIPN_USU_LOGIN")
-            senha = page.locator("#vIPN_USU_SENHA")
-            entrar = page.locator("#BTNLOGIN")
+            usuario_selector = "#vIPN_USU_LOGIN"
+            senha_selector = "#vIPN_USU_SENHA"
+            entrar_selector = "#BTNLOGIN"
 
-            usuario.wait_for(state="visible", timeout=15000)
-            senha.wait_for(state="visible", timeout=15000)
-            entrar.wait_for(state="visible", timeout=15000)
+            page.locator(usuario_selector).wait_for(state="attached", timeout=20000)
+            page.locator(senha_selector).wait_for(state="attached", timeout=20000)
+            page.locator(entrar_selector).wait_for(state="attached", timeout=20000)
 
-            usuario.fill(FOCCO_USERNAME)
-            senha.fill(FOCCO_PASSWORD)
+            set_input_value(page, usuario_selector, FOCCO_USERNAME)
+            set_input_value(page, senha_selector, FOCCO_PASSWORD)
 
-            entrar.click()
+            page.wait_for_timeout(1000)
+            page.locator(entrar_selector).click(force=True)
 
             page.wait_for_timeout(8000)
             resultado["url_final"] = page.url
