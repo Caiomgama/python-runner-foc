@@ -172,57 +172,44 @@ def ajustar_linhas_por_pagina(page, valor="120"):
 
         const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
 
-        const abrirPorTexto = () => {
-            const elementos = Array.from(document.querySelectorAll('div, span, a, button'));
-            for (const el of elementos) {
-                const txt = normalizar(el.innerText || el.textContent || '');
-                if (txt === 'Linhas por página:' && isVisible(el)) {
-                    const clicaveis = [
-                        el.nextElementSibling,
-                        el.parentElement,
-                        el.closest('div'),
-                    ].filter(Boolean);
-
-                    for (const c of clicaveis) {
-                        try {
-                            c.click();
-                        } catch (e) {}
-                    }
-                    return true;
-                }
-            }
-            return false;
-        };
-
-        const clicarOpcao = () => {
-            const candidatos = Array.from(document.querySelectorAll('li, div, span, a, option'));
-            for (const el of candidatos) {
-                const txt = normalizar(el.innerText || el.textContent || '');
-                if (txt === textoAlvo && isVisible(el)) {
-                    try {
-                        el.click();
-                        return true;
-                    } catch (e) {}
-                }
-            }
-            return false;
-        };
-
         const selects = Array.from(document.querySelectorAll('select')).filter(isVisible);
         for (const sel of selects) {
             const options = Array.from(sel.options || []).map(o => normalizar(o.text));
             if (options.includes(textoAlvo)) {
-                sel.value = Array.from(sel.options).find(o => normalizar(o.text) === textoAlvo).value;
+                const opt = Array.from(sel.options).find(o => normalizar(o.text) === textoAlvo);
+                sel.value = opt.value;
                 sel.dispatchEvent(new Event('input', { bubbles: true }));
                 sel.dispatchEvent(new Event('change', { bubbles: true }));
                 return { alterado: true, modo: 'select' };
             }
         }
 
-        abrirPorTexto();
-        const clicouOpcao = clicarOpcao();
-        if (clicouOpcao) {
-            return { alterado: true, modo: 'menu' };
+        const candidatosAbrir = Array.from(document.querySelectorAll('div, span, a, button'));
+        for (const el of candidatosAbrir) {
+            const txt = normalizar(el.innerText || el.textContent || '');
+            if (txt === 'Linhas por página:' && isVisible(el)) {
+                const grupo = [
+                    el.nextElementSibling,
+                    el.parentElement,
+                    el.closest('div')
+                ].filter(Boolean);
+
+                for (const alvo of grupo) {
+                    try { alvo.click(); } catch (e) {}
+                }
+                break;
+            }
+        }
+
+        const candidatosOpcao = Array.from(document.querySelectorAll('li, div, span, a, option'));
+        for (const el of candidatosOpcao) {
+            const txt = normalizar(el.innerText || el.textContent || '');
+            if (txt === textoAlvo && isVisible(el)) {
+                try {
+                    el.click();
+                    return { alterado: true, modo: 'menu' };
+                } catch (e) {}
+            }
         }
 
         return { alterado: false, modo: null };
@@ -280,62 +267,6 @@ def obter_info_paginacao(page):
     return info
 
 
-def _normalizar_celulas(cells, numero_contrato):
-    cells = [c.strip() for c in cells if c and c.strip()]
-
-    if not cells:
-        return cells
-
-    if cells and cells[0] != numero_contrato and not cells[0].isdigit():
-        if numero_contrato in cells[1:]:
-            cells = cells[1:]
-
-    if numero_contrato in cells:
-        idx = cells.index(numero_contrato)
-        cells = cells[idx:]
-
-    return cells
-
-
-def _mapear_contrato(row_data, frame_url):
-    numero_contrato = (row_data.get("numero_contrato") or "").strip()
-    href = row_data.get("href") or ""
-    cells = _normalizar_celulas(row_data.get("cells") or [], numero_contrato)
-
-    contrato = {
-        "numero_contrato": numero_contrato,
-        "url_contrato": urljoin(frame_url, href) if href else None,
-        "projeto": None,
-        "cliente": None,
-        "consultor": None,
-        "executor": None,
-        "valor_venda": None,
-        "situacao": None,
-        "assinatura": None,
-        "previsao_entrega": None,
-        "row_text": row_data.get("row_text"),
-    }
-
-    if len(cells) >= 2:
-        contrato["projeto"] = cells[1]
-    if len(cells) >= 3:
-        contrato["cliente"] = cells[2]
-    if len(cells) >= 4:
-        contrato["consultor"] = cells[3]
-    if len(cells) >= 5:
-        contrato["executor"] = cells[4]
-    if len(cells) >= 6:
-        contrato["valor_venda"] = cells[5]
-    if len(cells) >= 7:
-        contrato["situacao"] = cells[6]
-    if len(cells) >= 8:
-        contrato["assinatura"] = cells[7]
-    if len(cells) >= 9:
-        contrato["previsao_entrega"] = cells[8]
-
-    return contrato
-
-
 def _limpar_texto(valor):
     if valor is None:
         return None
@@ -350,45 +281,34 @@ def extrair_contratos_visiveis(page):
     () => {
         const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
 
-        const isVisible = (el) => {
-            if (!el) return false;
-            const style = window.getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            return (
-                style.display !== 'none' &&
-                style.visibility !== 'hidden' &&
-                rect.width > 0 &&
-                rect.height > 0
-            );
-        };
-
-        const rows = Array.from(document.querySelectorAll('div[id^="GridContainerRow_"]'))
-            .filter(row => isVisible(row));
+        const anchors = Array.from(document.querySelectorAll('a[href*="wbpvencontrato"]'));
 
         const resultado = [];
 
-        for (const row of rows) {
-            const linkContrato = row.querySelector('a[href*="wbpvencontrato"]');
-            if (!linkContrato || !isVisible(linkContrato)) continue;
-
-            const numeroContrato = normalizar(linkContrato.innerText || linkContrato.textContent || '');
-            const href = linkContrato.getAttribute('href') || '';
+        for (const a of anchors) {
+            const numeroContrato = normalizar(a.innerText || a.textContent || '');
+            const href = a.getAttribute('href') || '';
 
             if (!numeroContrato) continue;
 
-            const visibleTds = Array.from(row.querySelectorAll('td'))
-                .filter(td => isVisible(td));
+            const row =
+                a.closest('div[id^="GridContainerRow_"]') ||
+                a.closest('tr') ||
+                a.parentElement;
 
-            const cells = visibleTds
+            if (!row) continue;
+
+            const cells = Array.from(row.querySelectorAll('td'))
                 .map(td => normalizar(td.innerText || td.textContent || ''))
                 .filter(txt => txt);
 
             resultado.push({
-                row_id: row.id || '',
                 numero_contrato: numeroContrato,
                 href,
                 cells,
-                row_text: normalizar(row.innerText || row.textContent || '')
+                row_text: normalizar(row.innerText || row.textContent || ''),
+                row_tag: row.tagName,
+                row_id: row.id || ''
             });
         }
 
@@ -416,16 +336,6 @@ def extrair_contratos_visiveis(page):
 
             vistos.add(chave)
 
-            # Esperado no modo tela cheia:
-            # 0 contrato
-            # 1 projeto
-            # 2 cliente
-            # 3 consultor
-            # 4 executor
-            # 5 valor_venda
-            # 6 situacao
-            # 7 assinatura
-            # 8 previsao_entrega
             contrato = {
                 "numero_contrato": numero,
                 "url_contrato": urljoin(frame.url, href) if href else None,
@@ -439,7 +349,8 @@ def extrair_contratos_visiveis(page):
                 "previsao_entrega": _limpar_texto(cells[8]) if len(cells) > 8 else None,
                 "row_text": _limpar_texto(row.get("row_text")),
                 "debug_cells": cells,
-                "row_id": row.get("row_id"),
+                "debug_row_tag": row.get("row_tag"),
+                "debug_row_id": row.get("row_id"),
             }
 
             contratos.append(contrato)
