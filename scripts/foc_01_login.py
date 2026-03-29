@@ -4,12 +4,22 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 FOCCO_URL = os.getenv("FOCCO_URL", "https://web.foccolojas.com.br/")
+FOCCO_USERNAME = os.getenv("FOCCO_USERNAME", "")
+FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 
 SESSION_DIR = Path("/app/scripts/session")
 SESSION_DIR.mkdir(parents=True, exist_ok=True)
+STORAGE_FILE = SESSION_DIR / "focco_storage.json"
 
 
 def main():
+    if not FOCCO_USERNAME or not FOCCO_PASSWORD:
+        print(json.dumps({
+            "success": False,
+            "error": "FOCCO_USERNAME ou FOCCO_PASSWORD não configurados"
+        }, ensure_ascii=False))
+        raise SystemExit(1)
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         context = browser.new_context()
@@ -19,11 +29,7 @@ def main():
             "success": False,
             "url_inicial": FOCCO_URL,
             "url_final": None,
-            "titulo": None,
-            "inputs_visiveis": [],
-            "textareas_visiveis": [],
-            "botoes_visiveis": [],
-            "iframes": [],
+            "storage_file": str(STORAGE_FILE),
             "mensagem": ""
         }
 
@@ -31,78 +37,67 @@ def main():
             page.goto(FOCCO_URL, wait_until="domcontentloaded", timeout=60000)
             page.wait_for_timeout(5000)
 
-            resultado["url_final"] = page.url
-            resultado["titulo"] = page.title()
-
-            # inputs
-            for i, inp in enumerate(page.locator("input").all()):
+            # pega somente inputs visíveis
+            visible_inputs = []
+            for inp in page.locator("input").all():
                 try:
                     if inp.is_visible():
-                        resultado["inputs_visiveis"].append({
-                            "index": i,
-                            "name": inp.get_attribute("name"),
-                            "id": inp.get_attribute("id"),
-                            "type": inp.get_attribute("type"),
-                            "placeholder": inp.get_attribute("placeholder"),
-                            "value": inp.get_attribute("value"),
-                            "outer_html": inp.evaluate("e => e.outerHTML")
-                        })
+                        input_type = (inp.get_attribute("type") or "").lower()
+                        visible_inputs.append((inp, input_type))
                 except Exception:
                     pass
 
-            # textareas
-            for i, ta in enumerate(page.locator("textarea").all()):
+            text_like = [inp for inp, t in visible_inputs if t in ("text", "email", "")]
+            password_like = [inp for inp, t in visible_inputs if t == "password"]
+
+            if not text_like:
+                raise Exception("Nenhum campo visível de usuário/email encontrado")
+
+            if not password_like:
+                raise Exception("Nenhum campo visível de senha encontrado")
+
+            usuario = text_like[0]
+            senha = password_like[0]
+
+            usuario.fill(FOCCO_USERNAME)
+            senha.fill(FOCCO_PASSWORD)
+
+            entrou = False
+
+            # tenta clicar no botão ENTRAR visível
+            possible_buttons = [
+                page.get_by_role("button", name="ENTRAR"),
+                page.get_by_role("button", name="Entrar"),
+                page.locator("button:has-text('ENTRAR')").first,
+                page.locator("button:has-text('Entrar')").first,
+                page.locator("input[type='submit']").first,
+                page.locator("text=ENTRAR").first,
+                page.locator("text=Entrar").first,
+            ]
+
+            for botao in possible_buttons:
                 try:
-                    if ta.is_visible():
-                        resultado["textareas_visiveis"].append({
-                            "index": i,
-                            "name": ta.get_attribute("name"),
-                            "id": ta.get_attribute("id"),
-                            "placeholder": ta.get_attribute("placeholder"),
-                            "outer_html": ta.evaluate("e => e.outerHTML")
-                        })
+                    if botao.is_visible(timeout=2000):
+                        botao.click()
+                        entrou = True
+                        break
                 except Exception:
                     pass
 
-            # botões/links
-            for i, el in enumerate(page.locator("button, input[type='submit'], a").all()[:50]):
-                try:
-                    if el.is_visible():
-                        texto = ""
-                        try:
-                            texto = el.inner_text().strip()
-                        except Exception:
-                            pass
+            if not entrou:
+                page.keyboard.press("Enter")
 
-                        resultado["botoes_visiveis"].append({
-                            "index": i,
-                            "tag": el.evaluate("e => e.tagName"),
-                            "text": texto[:200],
-                            "id": el.get_attribute("id"),
-                            "name": el.get_attribute("name"),
-                            "type": el.get_attribute("type"),
-                            "outer_html": el.evaluate("e => e.outerHTML")
-                        })
-                except Exception:
-                    pass
+            page.wait_for_timeout(7000)
+            resultado["url_final"] = page.url
 
-            # iframes
-            for i, fr in enumerate(page.locator("iframe").all()):
-                try:
-                    resultado["iframes"].append({
-                        "index": i,
-                        "name": fr.get_attribute("name"),
-                        "id": fr.get_attribute("id"),
-                        "src": fr.get_attribute("src")
-                    })
-                except Exception:
-                    pass
+            context.storage_state(path=str(STORAGE_FILE))
 
             resultado["success"] = True
-            resultado["mensagem"] = "Mapeamento detalhado realizado"
+            resultado["mensagem"] = "Login executado e sessão salva"
 
         except Exception as e:
-            resultado["mensagem"] = f"Erro ao mapear tela: {str(e)}"
+            resultado["url_final"] = page.url if page else None
+            resultado["mensagem"] = f"Erro no login: {str(e)}"
 
         finally:
             browser.close()
