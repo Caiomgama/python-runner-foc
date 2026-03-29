@@ -12,14 +12,26 @@ SESSION_DIR.mkdir(parents=True, exist_ok=True)
 STORAGE_FILE = SESSION_DIR / "focco_storage.json"
 
 
-def set_input_value(page, selector, value):
-    page.eval_on_selector(
+def find_in_any_frame(page, selector: str, timeout_ms: int = 3000):
+    for frame in page.frames:
+        try:
+            loc = frame.locator(selector).first
+            loc.wait_for(state="attached", timeout=timeout_ms)
+            return frame, loc
+        except Exception:
+            pass
+    return None, None
+
+
+def set_value(frame, selector, value):
+    frame.eval_on_selector(
         selector,
         """
         (el, value) => {
             el.value = value;
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('blur', { bubbles: true }));
         }
         """,
         value
@@ -36,34 +48,42 @@ def main():
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        context = browser.new_context()
+        context = browser.new_context(viewport={"width": 1600, "height": 900})
         page = context.new_page()
 
         resultado = {
             "success": False,
             "url_inicial": FOCCO_URL,
             "url_final": None,
-            "storage_file": str(STORAGE_FILE),
+            "frames": [],
             "mensagem": ""
         }
 
         try:
-            page.goto(FOCCO_URL, wait_until="domcontentloaded", timeout=60000)
+            page.goto(FOCCO_URL, wait_until="networkidle", timeout=90000)
             page.wait_for_timeout(5000)
+
+            resultado["frames"] = [f.url for f in page.frames]
 
             usuario_selector = "#vIPN_USU_LOGIN"
             senha_selector = "#vIPN_USU_SENHA"
             entrar_selector = "#BTNLOGIN"
 
-            page.locator(usuario_selector).wait_for(state="attached", timeout=20000)
-            page.locator(senha_selector).wait_for(state="attached", timeout=20000)
-            page.locator(entrar_selector).wait_for(state="attached", timeout=20000)
+            frame_user, _ = find_in_any_frame(page, usuario_selector, 5000)
+            frame_pass, _ = find_in_any_frame(page, senha_selector, 5000)
+            frame_btn, _ = find_in_any_frame(page, entrar_selector, 5000)
 
-            set_input_value(page, usuario_selector, FOCCO_USERNAME)
-            set_input_value(page, senha_selector, FOCCO_PASSWORD)
+            if not frame_user:
+                raise Exception("Campo usuário não encontrado em nenhum frame")
+            if not frame_pass:
+                raise Exception("Campo senha não encontrado em nenhum frame")
+            if not frame_btn:
+                raise Exception("Botão entrar não encontrado em nenhum frame")
 
-            page.wait_for_timeout(1000)
-            page.locator(entrar_selector).click(force=True)
+            set_value(frame_user, usuario_selector, FOCCO_USERNAME)
+            set_value(frame_pass, senha_selector, FOCCO_PASSWORD)
+
+            frame_btn.locator(entrar_selector).click(force=True)
 
             page.wait_for_timeout(8000)
             resultado["url_final"] = page.url
