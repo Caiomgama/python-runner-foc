@@ -481,7 +481,7 @@ def main():
 
         try:
             context = browser.new_context(
-                viewport={"width": 1600, "height": 900}
+                viewport={"width": 1920, "height": 1080}
             )
             page = context.new_page()
 
