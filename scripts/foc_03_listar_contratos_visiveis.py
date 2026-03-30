@@ -17,6 +17,17 @@ CONTRATOS_URL = os.getenv(
     "https://web.foccolojas.com.br/criare/wbpvencontratos"
 )
 
+STATUS_VALIDOS = {
+    "Pendente",
+    "Cancelado",
+    "Liberado",
+    "Ativo",
+    "Finalizado",
+    "Em Andamento",
+    "Suspenso",
+    "Bloqueado",
+}
+
 
 def is_dashboard(page):
     url = page.url or ""
@@ -273,6 +284,96 @@ def _limpar_texto(valor):
     return " ".join(str(valor).split()).strip()
 
 
+def _unicos(seq):
+    vistos = set()
+    resultado = []
+    for item in seq:
+        item = _limpar_texto(item)
+        if not item:
+            continue
+        if item in vistos:
+            continue
+        vistos.add(item)
+        resultado.append(item)
+    return resultado
+
+
+def _parece_data(txt):
+    if not txt:
+        return False
+    if txt == "Não Informado":
+        return True
+    return bool(re.fullmatch(r"\d{2}/\d{2}/\d{4}", txt))
+
+
+def _parece_valor(txt):
+    if not txt:
+        return False
+    txt = txt.replace("R$", "").strip()
+    return bool(re.fullmatch(r"[\d\.\,]+", txt)) and "," in txt
+
+
+def _tem_letras(txt):
+    if not txt:
+        return False
+    return bool(re.search(r"[A-Za-zÀ-ÿ]", txt))
+
+
+def _melhor_candidato(candidatos, tipo, numero_contrato=None):
+    candidatos = _unicos(candidatos)
+
+    if numero_contrato:
+        candidatos = [c for c in candidatos if c != numero_contrato]
+
+    if not candidatos:
+        return None
+
+    if tipo == "projeto":
+        preferidos = [
+            c for c in candidatos
+            if _tem_letras(c) and ("-" in c or re.match(r"^\d+\s*-\s*", c))
+        ]
+        if preferidos:
+            return max(preferidos, key=len)
+
+        preferidos = [c for c in candidatos if _tem_letras(c)]
+        if preferidos:
+            return max(preferidos, key=len)
+
+        return max(candidatos, key=len)
+
+    if tipo in {"cliente", "consultor", "executor"}:
+        preferidos = [c for c in candidatos if _tem_letras(c)]
+        if preferidos:
+            return max(preferidos, key=len)
+        return max(candidatos, key=len)
+
+    if tipo == "valor_venda":
+        preferidos = [c for c in candidatos if _parece_valor(c)]
+        if preferidos:
+            return preferidos[-1]
+        return candidatos[-1]
+
+    if tipo == "situacao":
+        preferidos = [c for c in candidatos if c in STATUS_VALIDOS]
+        if preferidos:
+            return preferidos[0]
+
+        preferidos = [c for c in candidatos if _tem_letras(c)]
+        if preferidos:
+            return preferidos[0]
+
+        return candidatos[0]
+
+    if tipo in {"assinatura", "previsao_entrega"}:
+        preferidos = [c for c in candidatos if _parece_data(c)]
+        if preferidos:
+            return preferidos[0]
+        return candidatos[-1]
+
+    return candidatos[-1]
+
+
 def extrair_contratos_visiveis(page):
     contratos = []
     vistos = set()
@@ -281,7 +382,20 @@ def extrair_contratos_visiveis(page):
     () => {
         const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
 
-        const anchors = Array.from(document.querySelectorAll('a[href*="wbpvencontrato"]'));
+        const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return (
+                style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                rect.width > 0 &&
+                rect.height > 0
+            );
+        };
+
+        const anchors = Array.from(document.querySelectorAll('a[href*="wbpvencontrato"]'))
+            .filter(a => isVisible(a));
 
         const resultado = [];
 
@@ -298,14 +412,31 @@ def extrair_contratos_visiveis(page):
 
             if (!row) continue;
 
-            const cells = Array.from(row.querySelectorAll('td'))
-                .map(td => normalizar(td.innerText || td.textContent || ''))
-                .filter(txt => txt);
+            const visibleTds = Array.from(row.querySelectorAll('td'))
+                .filter(td => isVisible(td));
+
+            const grupos = visibleTds.map((td) => {
+                const candidatos = [];
+
+                const descendentes = Array.from(
+                    td.querySelectorAll('a, span, div, label')
+                ).filter(el => isVisible(el));
+
+                for (const el of descendentes) {
+                    const txt = normalizar(el.innerText || el.textContent || '');
+                    if (txt) candidatos.push(txt);
+                }
+
+                const proprioTd = normalizar(td.innerText || td.textContent || '');
+                if (proprioTd) candidatos.push(proprioTd);
+
+                return Array.from(new Set(candidatos));
+            });
 
             resultado.push({
                 numero_contrato: numeroContrato,
                 href,
-                cells,
+                grupos,
                 row_text: normalizar(row.innerText || row.textContent || ''),
                 row_tag: row.tagName,
                 row_id: row.id || ''
@@ -325,7 +456,7 @@ def extrair_contratos_visiveis(page):
         for row in rows:
             numero = _limpar_texto(row.get("numero_contrato"))
             href = _limpar_texto(row.get("href"))
-            cells = row.get("cells") or []
+            grupos = row.get("grupos") or []
 
             if not numero:
                 continue
@@ -336,19 +467,45 @@ def extrair_contratos_visiveis(page):
 
             vistos.add(chave)
 
+            grupos_limpos = [_unicos(g) for g in grupos if _unicos(g)]
+
+            idx_contrato = None
+            for i, grupo in enumerate(grupos_limpos):
+                if numero in grupo:
+                    idx_contrato = i
+                    break
+
+            if idx_contrato is None:
+                continue
+
+            grupos_campos = grupos_limpos[idx_contrato + 1: idx_contrato + 9]
+
+            while len(grupos_campos) < 8:
+                grupos_campos.append([])
+
+            projeto = _melhor_candidato(grupos_campos[0], "projeto", numero)
+            cliente = _melhor_candidato(grupos_campos[1], "cliente", numero)
+            consultor = _melhor_candidato(grupos_campos[2], "consultor", numero)
+            executor = _melhor_candidato(grupos_campos[3], "executor", numero)
+            valor_venda = _melhor_candidato(grupos_campos[4], "valor_venda", numero)
+            situacao = _melhor_candidato(grupos_campos[5], "situacao", numero)
+            assinatura = _melhor_candidato(grupos_campos[6], "assinatura", numero)
+            previsao_entrega = _melhor_candidato(grupos_campos[7], "previsao_entrega", numero)
+
             contrato = {
                 "numero_contrato": numero,
                 "url_contrato": urljoin(frame.url, href) if href else None,
-                "projeto": _limpar_texto(cells[1]) if len(cells) > 1 else None,
-                "cliente": _limpar_texto(cells[2]) if len(cells) > 2 else None,
-                "consultor": _limpar_texto(cells[3]) if len(cells) > 3 else None,
-                "executor": _limpar_texto(cells[4]) if len(cells) > 4 else None,
-                "valor_venda": _limpar_texto(cells[5]) if len(cells) > 5 else None,
-                "situacao": _limpar_texto(cells[6]) if len(cells) > 6 else None,
-                "assinatura": _limpar_texto(cells[7]) if len(cells) > 7 else None,
-                "previsao_entrega": _limpar_texto(cells[8]) if len(cells) > 8 else None,
+                "projeto": projeto,
+                "cliente": cliente,
+                "consultor": consultor,
+                "executor": executor,
+                "valor_venda": valor_venda,
+                "situacao": situacao,
+                "assinatura": assinatura,
+                "previsao_entrega": previsao_entrega,
                 "row_text": _limpar_texto(row.get("row_text")),
-                "debug_cells": cells,
+                "debug_grupos": grupos_limpos,
+                "debug_grupos_campos": grupos_campos,
                 "debug_row_tag": row.get("row_tag"),
                 "debug_row_id": row.get("row_id"),
             }
