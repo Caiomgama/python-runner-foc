@@ -17,10 +17,9 @@ DASHBOARD_URL_PARTS = [
 CONTRATO_DETALHE_URL_PART = "/criare/wbpvencontrato?"
 
 
-def normalizar(valor):
-    if valor is None:
-        return ""
-    return " ".join(str(valor).split()).strip()
+def is_dashboard(page):
+    url = page.url or ""
+    return any(part in url for part in DASHBOARD_URL_PARTS)
 
 
 def find_in_any_frame(page, selector: str, timeout_ms: int = 3000):
@@ -49,20 +48,11 @@ def set_value(frame, selector, value):
     )
 
 
-def is_dashboard(page):
-    url = page.url or ""
-    return any(part in url for part in DASHBOARD_URL_PARTS)
-
-
 def has_login_form(page):
-    frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 1500)
-    frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 1500)
-    frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 1500)
-    return (
-        frame_user is not None
-        and frame_pass is not None
-        and frame_btn is not None
-    )
+    frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 2000)
+    frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 2000)
+    frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 2000)
+    return frame_user is not None and frame_pass is not None and frame_btn is not None
 
 
 def do_login(page):
@@ -82,7 +72,7 @@ def do_login(page):
     frame_btn.locator("#BTNLOGIN").click(force=True)
 
 
-def garantir_login_simples(page, resultado):
+def garantir_login(page, resultado):
     page.goto(FOCCO_URL, wait_until="networkidle", timeout=90000)
     page.wait_for_timeout(5000)
 
@@ -95,6 +85,7 @@ def garantir_login_simples(page, resultado):
         page.wait_for_timeout(8000)
         resultado["login_executed"] = True
 
+        # não vou travar em confirmação rígida de dashboard
         if not has_login_form(page):
             return True
 
@@ -102,6 +93,16 @@ def garantir_login_simples(page, resultado):
         return not has_login_form(page)
 
     return True
+
+
+def _limpar_texto(valor):
+    if valor is None:
+        return None
+    return " ".join(str(valor).split()).strip()
+
+
+def normalizar(valor):
+    return _limpar_texto(valor) or ""
 
 
 def coletar_textos_visiveis(page):
@@ -213,11 +214,15 @@ def extrair_ambientes_grade_principal(page):
             if (!el) return false;
             const style = window.getComputedStyle(el);
             const rect = el.getBoundingClientRect();
-            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+            return (
+                style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                rect.width > 0 &&
+                rect.height > 0
+            );
         };
 
         const linhas = [];
-
         const candidatos = Array.from(document.querySelectorAll('tr, div[id^="GridContainerRow_"], div'));
 
         for (const row of candidatos) {
@@ -225,11 +230,6 @@ def extrair_ambientes_grade_principal(page):
 
             const txt = normalizar(row.innerText || row.textContent || '');
             if (!txt) continue;
-
-            // tenta reconhecer linhas de ambientes da tela principal
-            if (!/(ambiente|valor líquido|valor total)/i.test(document.body.innerText || '')) {
-                // sem contexto forte, segue
-            }
 
             const celulas = Array.from(row.querySelectorAll('td, span, div, a'))
                 .filter(isVisible)
@@ -255,7 +255,6 @@ def extrair_ambientes_grade_principal(page):
                 texto = normalizar(linha.get("texto"))
                 celulas = linha.get("celulas") or []
 
-                # filtro leve para ambientes
                 if any("r$" in c.lower() or "," in c for c in celulas) and len(celulas) >= 3:
                     resultado.append({
                         "texto": texto,
@@ -264,7 +263,6 @@ def extrair_ambientes_grade_principal(page):
         except Exception:
             pass
 
-    # dedup simples
     vistos = set()
     finais = []
     for item in resultado:
@@ -598,7 +596,7 @@ def main():
             context = browser.new_context(viewport={"width": 1920, "height": 1080})
             page = context.new_page()
 
-            ok_login = garantir_login_simples(page, resultado)
+            ok_login = garantir_login(page, resultado)
             if not ok_login:
                 resultado["url_final"] = page.url
                 resultado["mensagem"] = "Não foi possível concluir o login"
