@@ -7,17 +7,8 @@ FOCCO_URL = os.getenv("FOCCO_URL", "https://web.foccolojas.com.br/")
 FOCCO_USERNAME = os.getenv("FOCCO_USERNAME", "")
 FOCCO_PASSWORD = os.getenv("FOCCO_PASSWORD", "")
 
-DASHBOARD_URL_PARTS = [
-    "/criare/servlet/wbpnucnovodashboard",
-]
-
 CONTRATOS_LISTA_URL_PART = "/criare/wbpvencontratos"
 CONTRATO_DETALHE_URL_PART = "/criare/wbpvencontrato?"
-
-
-def is_dashboard(page):
-    url = page.url or ""
-    return any(part in url for part in DASHBOARD_URL_PARTS)
 
 
 def normalizar(valor):
@@ -53,9 +44,9 @@ def set_value(frame, selector, value):
 
 
 def has_login_form(page):
-    frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 2000)
-    frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 2000)
-    frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 2000)
+    frame_user, _ = find_in_any_frame(page, "#vIPN_USU_LOGIN", 1500)
+    frame_pass, _ = find_in_any_frame(page, "#vIPN_USU_SENHA", 1500)
+    frame_btn, _ = find_in_any_frame(page, "#BTNLOGIN", 1500)
 
     return (
         frame_user is not None
@@ -83,21 +74,26 @@ def do_login(page):
     frame_btn.locator("#BTNLOGIN").click(force=True)
 
 
-def garantir_login(page, resultado):
+def garantir_login_simples(page, resultado):
     page.goto(FOCCO_URL, wait_until="networkidle", timeout=90000)
-    page.wait_for_timeout(5000)
-
-    if is_dashboard(page):
-        resultado["already_logged_in"] = True
-        return True
+    page.wait_for_timeout(4000)
 
     if has_login_form(page):
         do_login(page)
         page.wait_for_timeout(8000)
         resultado["login_executed"] = True
-        return is_dashboard(page)
 
-    return False
+        # se depois do login o formulário sumiu, já consideramos ok
+        if not has_login_form(page):
+            return True
+
+        # segunda chance curta
+        page.wait_for_timeout(3000)
+        return not has_login_form(page)
+
+    # se não tinha formulário, já estava logado
+    resultado["already_logged_in"] = True
+    return True
 
 
 def coletar_textos_visiveis(page):
@@ -136,25 +132,26 @@ def confirmar_detalhe_contrato(page, numero_contrato=None):
             "evidencias": ["URL da lista de contratos detectada"],
         }
 
-    if CONTRATO_DETALHE_URL_PART not in url_atual:
-        # ainda pode ser uma variante da tela, então tentamos confirmar por evidências visuais
-        pass
-
     evidencias = []
 
-    # evidência 1: URL de detalhe
     if CONTRATO_DETALHE_URL_PART in url_atual:
         evidencias.append("URL de detalhe do contrato detectada")
 
-    # evidência 2: seção Ambientes
-    if existe_texto(page, "Ambientes"):
-        evidencias.append("Texto 'Ambientes' encontrado")
+    if existe_texto(page, "Contrato >"):
+        evidencias.append("Breadcrumb de contrato encontrado")
 
-    # evidência 3: botão / ação de imprimir contrato
-    if existe_texto(page, "Imprimir Contrato"):
+    if existe_texto(page, "CLIENTE"):
+        evidencias.append("Seção cliente encontrada")
+
+    if existe_texto(page, "DADOS ENTREGA/COBRANÇA"):
+        evidencias.append("Seção Dados Entrega/Cobrança encontrada")
+
+    if existe_texto(page, "IMPRIMIR CONTRATO"):
         evidencias.append("Texto 'Imprimir Contrato' encontrado")
 
-    # evidência 4: número do contrato visível
+    if existe_texto(page, "MAIS OPÇÕES"):
+        evidencias.append("Texto 'Mais Opções' encontrado")
+
     if numero_contrato and existe_texto(page, str(numero_contrato)):
         evidencias.append(f"Número do contrato {numero_contrato} encontrado na tela")
 
@@ -173,7 +170,7 @@ def abrir_contrato(page, url_contrato, numero_contrato, resultado):
     page.goto(url_contrato, wait_until="networkidle", timeout=90000)
     page.wait_for_timeout(5000)
 
-    # se caiu no login, tenta autenticar e abrir de novo
+    # se caiu no login, reloga e tenta de novo
     if has_login_form(page):
         resultado["relogin_durante_abertura"] = True
         do_login(page)
@@ -238,11 +235,11 @@ def main():
             )
             page = context.new_page()
 
-            ok_login = garantir_login(page, resultado)
+            ok_login = garantir_login_simples(page, resultado)
 
             if not ok_login:
                 resultado["url_final"] = page.url
-                resultado["mensagem"] = "Não foi possível confirmar o login antes de abrir o contrato"
+                resultado["mensagem"] = "Não foi possível concluir o login antes de abrir o contrato"
                 print(json.dumps(resultado, ensure_ascii=False))
                 return
 
