@@ -594,22 +594,8 @@ def extrair_contratos_visiveis(page):
             );
         };
 
-        const anchors = Array.from(document.querySelectorAll('a[href]'))
-            .filter(a => {
-                if (!isVisible(a)) return false;
-                const href = (a.getAttribute('href') || '').trim();
-                if (!href) return false;
-
-                const hrefLower = href.toLowerCase();
-                const isContratoDetalhe =
-                    hrefLower.includes('wbpvencontrato?') ||
-                    hrefLower.endsWith('/wbpvencontrato') ||
-                    hrefLower.includes('/wbpvencontrato?') ||
-                    hrefLower.startswith('wbpvencontrato?');
-
-                const isLista = hrefLower.includes('wbpvencontratos');
-                return isContratoDetalhe && !isLista;
-            });
+        const anchors = Array.from(document.querySelectorAll('a[href*="wbpvencontrato"]'))
+            .filter(a => isVisible(a));
 
         const resultado = [];
 
@@ -618,7 +604,6 @@ def extrair_contratos_visiveis(page):
             const href = a.getAttribute('href') || '';
 
             if (!numeroContrato) continue;
-            if (!/^\d+$/.test(numeroContrato)) continue;
 
             const row =
                 a.closest('div[id^="GridContainerRow_"]') ||
