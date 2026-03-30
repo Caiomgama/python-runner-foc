@@ -2,7 +2,6 @@ import json
 import os
 import re
 import sys
-from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright
 
@@ -85,7 +84,6 @@ def garantir_login(page, resultado):
         page.wait_for_timeout(8000)
         resultado["login_executed"] = True
 
-        # não vou travar em confirmação rígida de dashboard
         if not has_login_form(page):
             return True
 
@@ -139,14 +137,8 @@ def confirmar_detalhe_contrato(page, numero_contrato=None):
     if existe_texto(page, "Contrato >"):
         evidencias.append("Breadcrumb de contrato encontrado")
 
-    if existe_texto(page, "CLIENTE"):
-        evidencias.append("Seção cliente encontrada")
-
-    if existe_texto(page, "DADOS ENTREGA/COBRANÇA"):
-        evidencias.append("Seção Dados Entrega/Cobrança encontrada")
-
-    if existe_texto(page, "IMPRIMIR CONTRATO"):
-        evidencias.append("Texto 'Imprimir Contrato' encontrado")
+    if existe_texto(page, "Ambientes"):
+        evidencias.append("Seção Ambientes encontrada")
 
     if numero_contrato and existe_texto(page, str(numero_contrato)):
         evidencias.append(f"Número do contrato {numero_contrato} encontrado na tela")
@@ -175,37 +167,7 @@ def abrir_contrato(page, url_contrato, numero_contrato, resultado):
     return confirmar_detalhe_contrato(page, numero_contrato)
 
 
-def extrair_campos_basicos_contrato(page, numero_contrato):
-    texto_total = "\n".join(coletar_textos_visiveis(page))
-
-    def extrair_por_rotulo(rotulo):
-        padrao = rf"{re.escape(rotulo)}\s*(.+)"
-        m = re.search(padrao, texto_total, re.IGNORECASE)
-        return normalizar(m.group(1)) if m else None
-
-    return {
-        "numero_contrato": numero_contrato,
-        "cliente_nome": extrair_por_rotulo("Cliente"),
-        "projeto": extrair_por_rotulo("Projeto"),
-        "orcamento": extrair_por_rotulo("Orçamento"),
-        "condicao_pagamento": extrair_por_rotulo("Condição de Pagamento"),
-        "observacao": extrair_por_rotulo("Observação"),
-        "loja_unidade": extrair_por_rotulo("Loja/Unidade"),
-        "tipo_venda": extrair_por_rotulo("Tipo de Venda"),
-        "descritivo_contrato": extrair_por_rotulo("Descritivo do Contrato"),
-        "liberacao_comercial": extrair_por_rotulo("Liberação Comercial"),
-        "liberacao_financeira": extrair_por_rotulo("Liberação Financeira"),
-        "andamento_obra": extrair_por_rotulo("Andamento da Obra"),
-        "status_impressao": extrair_por_rotulo("Status da Impressão"),
-        "data_aprovacao": extrair_por_rotulo("Data de Aprovação"),
-        "assinatura_contrato": extrair_por_rotulo("Assinatura do Contrato"),
-        "situacao": extrair_por_rotulo("Situação"),
-    }
-
-
-def extrair_ambientes_grade_principal(page):
-    resultado = []
-
+def extrair_ambientes(page):
     script = """
     () => {
         const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
@@ -214,335 +176,101 @@ def extrair_ambientes_grade_principal(page):
             if (!el) return false;
             const style = window.getComputedStyle(el);
             const rect = el.getBoundingClientRect();
-            return (
-                style.display !== 'none' &&
-                style.visibility !== 'hidden' &&
-                rect.width > 0 &&
-                rect.height > 0
-            );
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
         };
 
-        const linhas = [];
-        const candidatos = Array.from(document.querySelectorAll('tr, div[id^="GridContainerRow_"], div'));
+        const pegarTexto = (root, seletor) => {
+            const el = root.querySelector(seletor);
+            if (!el || !isVisible(el)) return null;
+            return normalizar(el.innerText || el.textContent || '');
+        };
 
-        for (const row of candidatos) {
-            if (!isVisible(row)) continue;
+        const tabelas = Array.from(document.querySelectorAll('table')).filter(isVisible);
 
-            const txt = normalizar(row.innerText || row.textContent || '');
-            if (!txt) continue;
+        for (const table of tabelas) {
+            const textoTabela = normalizar(table.innerText || table.textContent || '');
 
-            const celulas = Array.from(row.querySelectorAll('td, span, div, a'))
-                .filter(isVisible)
-                .map(el => normalizar(el.innerText || el.textContent || ''))
-                .filter(Boolean);
+            // garante que é a tabela certa
+            if (!/Ambiente/i.test(textoTabela)) continue;
+            if (!/Valor Líquido/i.test(textoTabela) && !/Valor Liquido/i.test(textoTabela)) continue;
+            if (!/Valor Total/i.test(textoTabela)) continue;
 
-            if (celulas.length >= 3) {
+            const linhas = [];
+            const trs = Array.from(table.querySelectorAll('tr'));
+
+            for (const tr of trs) {
+                const rowText = normalizar(tr.innerText || tr.textContent || '');
+
+                // ignora header
+                if (!rowText) continue;
+                if (/^Ambiente\\s+Nome\\s+Situa/i.test(rowText)) continue;
+
+                const ambiente = pegarTexto(tr, "span[id*='VLJ_AMB_AMBIENTE_'], span[id*='AMB_AMBIENTE_']");
+                const nome = pegarTexto(tr, "span[id*='VLJ_AMB_DESCRICAO_AUXILIAR_'], span[id*='AMB_DESCRICAO_AUXILIAR_']");
+                const situacao = pegarTexto(tr, "span[id*='SITUACAO'], span[id*='SITUACAOITEM'], span[id*='AMB_SITUACAO_']");
+                const valorLiquido = pegarTexto(tr, "span[id*='VALORLIQUIDOITEM_'], span[id*='VALORLIQUIDO_']");
+                const valorTotal = pegarTexto(tr, "span[id*='VALORTOTALITEM_'], span[id*='VALORTOTAL_']");
+
+                // fallback por colunas visíveis, caso algum seletor não pegue
+                const tds = Array.from(tr.querySelectorAll('td'))
+                    .filter(isVisible)
+                    .map(td => normalizar(td.innerText || td.textContent || ''));
+
+                let ambienteFinal = ambiente;
+                let nomeFinal = nome;
+                let situacaoFinal = situacao;
+                let valorLiquidoFinal = valorLiquido;
+                let valorTotalFinal = valorTotal;
+
+                if (tds.length >= 5) {
+                    ambienteFinal = ambienteFinal || tds[1] || tds[0] || null;
+                    nomeFinal = nomeFinal || tds[2] || null;
+                    situacaoFinal = situacaoFinal || tds[3] || null;
+
+                    const valores = tds.filter(v => /^R?\\$?\\s*[\\d\\.]+,\\d+$/.test(v) || /^[\\d\\.]+,\\d+$/.test(v));
+                    if (valores.length >= 1) valorLiquidoFinal = valorLiquidoFinal || valores[0];
+                    if (valores.length >= 2) valorTotalFinal = valorTotalFinal || valores[1];
+                }
+
+                if (!ambienteFinal && !nomeFinal && !valorLiquidoFinal && !valorTotalFinal) {
+                    continue;
+                }
+
                 linhas.push({
-                    texto: txt,
-                    celulas: Array.from(new Set(celulas))
+                    ambiente: ambienteFinal,
+                    nome: nomeFinal,
+                    situacao: situacaoFinal,
+                    valor_liquido: valorLiquidoFinal,
+                    valor_total: valorTotalFinal,
+                    row_text: rowText
                 });
             }
+
+            return linhas;
         }
 
-        return linhas;
+        return [];
     }
     """
 
     for frame in page.frames:
         try:
-            linhas = frame.evaluate(script)
-            for linha in linhas:
-                texto = normalizar(linha.get("texto"))
-                celulas = linha.get("celulas") or []
-
-                if any("r$" in c.lower() or "," in c for c in celulas) and len(celulas) >= 3:
-                    resultado.append({
-                        "texto": texto,
-                        "celulas": celulas
-                    })
+            data = frame.evaluate(script)
+            if data:
+                return [
+                    {
+                        "ambiente": _limpar_texto(item.get("ambiente")),
+                        "nome": _limpar_texto(item.get("nome")),
+                        "situacao": _limpar_texto(item.get("situacao")),
+                        "valor_liquido": _limpar_texto(item.get("valor_liquido")),
+                        "valor_total": _limpar_texto(item.get("valor_total")),
+                    }
+                    for item in data
+                ]
         except Exception:
             pass
 
-    vistos = set()
-    finais = []
-    for item in resultado:
-        chave = item["texto"]
-        if chave in vistos:
-            continue
-        vistos.add(chave)
-        finais.append(item)
-
-    return finais
-
-
-def clicar_botao_cifrao(page):
-    script = """
-    () => {
-        const isVisible = (el) => {
-            if (!el) return false;
-            const style = window.getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-
-        const candidatos = Array.from(document.querySelectorAll('a, button, div, span, img'));
-        for (const el of candidatos) {
-            if (!isVisible(el)) continue;
-
-            const txt = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-            const title = (el.getAttribute && (el.getAttribute('title') || '')) || '';
-            const src = (el.getAttribute && (el.getAttribute('src') || '')) || '';
-
-            const bate =
-                txt === '$' ||
-                title.includes('$') ||
-                /cifrao|financeir|prec|orcament|comiss/i.test(title) ||
-                /cifrao|financeir|prec|orcament|comiss/i.test(src);
-
-            if (!bate) continue;
-
-            try {
-                el.click();
-                return { clicado: true, texto: txt, title, src };
-            } catch (e) {}
-        }
-
-        return { clicado: false };
-    }
-    """
-
-    for frame in page.frames:
-        try:
-            res = frame.evaluate(script)
-            if res and res.get("clicado"):
-                page.wait_for_timeout(3000)
-                return res
-        except Exception:
-            pass
-
-    return {"clicado": False}
-
-
-def confirmar_formacao_preco(page):
-    evidencias = []
-
-    if existe_texto(page, "Formação de Preço"):
-        evidencias.append("Texto 'Formação de Preço' encontrado")
-
-    if existe_texto(page, "Valor de Venda"):
-        evidencias.append("Coluna 'Valor de Venda' encontrada")
-
-    if existe_texto(page, "Valor de Custo"):
-        evidencias.append("Coluna 'Valor de Custo' encontrada")
-
-    if existe_texto(page, "Lucro Bruto"):
-        evidencias.append("Coluna 'Lucro Bruto' encontrada")
-
-    return {
-        "ok": len(evidencias) >= 2,
-        "evidencias": evidencias,
-    }
-
-
-def extrair_formacao_preco(page):
-    script = """
-    () => {
-        const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
-
-        const isVisible = (el) => {
-            if (!el) return false;
-            const style = window.getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-
-        const tabelas = Array.from(document.querySelectorAll('table')).filter(isVisible);
-
-        for (const table of tabelas) {
-            const textoTabela = normalizar(table.innerText || table.textContent || '');
-            if (!/Valor de Venda/i.test(textoTabela) || !/Lucro Bruto/i.test(textoTabela)) continue;
-
-            const headers = Array.from(table.querySelectorAll('th'))
-                .map(th => normalizar(th.innerText || th.textContent || ''))
-                .filter(Boolean);
-
-            const rows = [];
-            const trs = Array.from(table.querySelectorAll('tr'));
-
-            for (const tr of trs) {
-                const cells = Array.from(tr.querySelectorAll('td'))
-                    .map(td => normalizar(td.innerText || td.textContent || ''));
-                if (cells.some(Boolean)) {
-                    rows.push(cells);
-                }
-            }
-
-            return {
-                headers,
-                rows,
-                tabela_texto: textoTabela
-            };
-        }
-
-        return {
-            headers: [],
-            rows: [],
-            tabela_texto: ''
-        };
-    }
-    """
-
-    for frame in page.frames:
-        try:
-            res = frame.evaluate(script)
-            if res and (res.get("headers") or res.get("rows")):
-                return res
-        except Exception:
-            pass
-
-    return {
-        "headers": [],
-        "rows": [],
-        "tabela_texto": ""
-    }
-
-
-def clicar_cifrao_comissoes(page):
-    script = """
-    () => {
-        const isVisible = (el) => {
-            if (!el) return false;
-            const style = window.getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-
-        const tabelas = Array.from(document.querySelectorAll('table')).filter(isVisible);
-
-        for (const table of tabelas) {
-            const textoTabela = (table.innerText || table.textContent || '').replace(/\\s+/g, ' ').trim();
-            if (!/Comiss/i.test(textoTabela)) continue;
-
-            const candidatos = Array.from(table.querySelectorAll('a, button, span, div, img')).filter(isVisible);
-
-            for (const el of candidatos) {
-                const txt = (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim();
-                const title = (el.getAttribute && (el.getAttribute('title') || '')) || '';
-                const src = (el.getAttribute && (el.getAttribute('src') || '')) || '';
-
-                const bate =
-                    txt === '$' ||
-                    title.includes('$') ||
-                    /comiss/i.test(title) ||
-                    /comiss/i.test(src);
-
-                if (!bate) continue;
-
-                try {
-                    el.click();
-                    return { clicado: true, texto: txt, title, src };
-                } catch (e) {}
-            }
-        }
-
-        return { clicado: false };
-    }
-    """
-
-    for frame in page.frames:
-        try:
-            res = frame.evaluate(script)
-            if res and res.get("clicado"):
-                page.wait_for_timeout(3000)
-                return res
-        except Exception:
-            pass
-
-    return {"clicado": False}
-
-
-def confirmar_previsao_comissionados(page):
-    evidencias = []
-
-    if existe_texto(page, "Previsão de Comissionados"):
-        evidencias.append("Texto 'Previsão de Comissionados' encontrado")
-
-    if existe_texto(page, "Envolvido"):
-        evidencias.append("Coluna 'Envolvido' encontrada")
-
-    if existe_texto(page, "Percentual"):
-        evidencias.append("Coluna 'Percentual' encontrada")
-
-    if existe_texto(page, "Base da Comissão"):
-        evidencias.append("Coluna 'Base da Comissão' encontrada")
-
-    return {
-        "ok": len(evidencias) >= 2,
-        "evidencias": evidencias,
-    }
-
-
-def extrair_previsao_comissionados(page):
-    script = """
-    () => {
-        const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
-
-        const isVisible = (el) => {
-            if (!el) return false;
-            const style = window.getComputedStyle(el);
-            const rect = el.getBoundingClientRect();
-            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-        };
-
-        const tabelas = Array.from(document.querySelectorAll('table')).filter(isVisible);
-
-        for (const table of tabelas) {
-            const textoTabela = normalizar(table.innerText || table.textContent || '');
-            if (!/Envolvido/i.test(textoTabela) || !/Percentual/i.test(textoTabela)) continue;
-
-            const headers = Array.from(table.querySelectorAll('th'))
-                .map(th => normalizar(th.innerText || th.textContent || ''))
-                .filter(Boolean);
-
-            const rows = [];
-            const trs = Array.from(table.querySelectorAll('tr'));
-
-            for (const tr of trs) {
-                const cells = Array.from(tr.querySelectorAll('td'))
-                    .map(td => normalizar(td.innerText || td.textContent || ''));
-                if (cells.some(Boolean)) {
-                    rows.push(cells);
-                }
-            }
-
-            return {
-                headers,
-                rows,
-                tabela_texto: textoTabela
-            };
-        }
-
-        return {
-            headers: [],
-            rows: [],
-            tabela_texto: ''
-        };
-    }
-    """
-
-    for frame in page.frames:
-        try:
-            res = frame.evaluate(script)
-            if res and (res.get("headers") or res.get("rows")):
-                return res
-        except Exception:
-            pass
-
-    return {
-        "headers": [],
-        "rows": [],
-        "tabela_texto": ""
-    }
+    return []
 
 
 def main():
@@ -558,14 +286,7 @@ def main():
         "contrato_aberto": False,
         "pagina_confirmada": False,
         "evidencias_confirmacao": [],
-        "dados_basicos_contrato": {},
-        "ambientes_grade_principal": [],
-        "formacao_preco_confirmada": False,
-        "formacao_preco_evidencias": [],
-        "formacao_preco": {},
-        "previsao_comissionados_confirmada": False,
-        "previsao_comissionados_evidencias": [],
-        "previsao_comissionados": {},
+        "ambientes": [],
         "mensagem": "",
     }
 
@@ -614,31 +335,15 @@ def main():
 
             resultado["contrato_aberto"] = True
             resultado["pagina_confirmada"] = True
-
-            resultado["dados_basicos_contrato"] = extrair_campos_basicos_contrato(page, numero_contrato)
-            resultado["ambientes_grade_principal"] = extrair_ambientes_grade_principal(page)
-
-            clique_financeiro = clicar_botao_cifrao(page)
-            if clique_financeiro.get("clicado"):
-                confirmacao_fp = confirmar_formacao_preco(page)
-                resultado["formacao_preco_confirmada"] = confirmacao_fp.get("ok", False)
-                resultado["formacao_preco_evidencias"] = confirmacao_fp.get("evidencias", [])
-                resultado["formacao_preco"] = extrair_formacao_preco(page)
-
-                clique_comissoes = clicar_cifrao_comissoes(page)
-                if clique_comissoes.get("clicado"):
-                    confirmacao_pc = confirmar_previsao_comissionados(page)
-                    resultado["previsao_comissionados_confirmada"] = confirmacao_pc.get("ok", False)
-                    resultado["previsao_comissionados_evidencias"] = confirmacao_pc.get("evidencias", [])
-                    resultado["previsao_comissionados"] = extrair_previsao_comissionados(page)
+            resultado["ambientes"] = extrair_ambientes(page)
 
             resultado["success"] = True
-            resultado["mensagem"] = "Complementares coletados com sucesso"
+            resultado["mensagem"] = "Ambientes coletados com sucesso"
             print(json.dumps(resultado, ensure_ascii=False))
 
         except Exception as e:
             resultado["url_final"] = page.url if "page" in locals() and page else None
-            resultado["mensagem"] = f"Erro ao coletar complementares: {str(e)}"
+            resultado["mensagem"] = f"Erro ao coletar ambientes: {str(e)}"
             print(json.dumps(resultado, ensure_ascii=False))
 
         finally:
