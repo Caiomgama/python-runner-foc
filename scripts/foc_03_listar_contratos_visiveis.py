@@ -1,7 +1,9 @@
+
 import json
 import os
 import re
 from urllib.parse import urljoin
+
 from playwright.sync_api import sync_playwright
 
 FOCCO_URL = os.getenv("FOCCO_URL", "https://web.foccolojas.com.br/")
@@ -27,6 +29,23 @@ STATUS_VALIDOS = {
     "Suspenso",
     "Bloqueado",
 }
+
+CLEAR_FILTER_CONTAINER_SELECTORS = [
+    "#LIMPARFILTROS",
+    "[data-gx-cntrl='LIMPARFILTROS']",
+    "#DIVLIMPAFILTRO",
+    "#DIVLIMPARFILTRO",
+]
+
+CLEAR_FILTER_LINK_SELECTORS = [
+    "#DIVLIMPAFILTRO a",
+    "#DIVLIMPARFILTRO a",
+    "#LIMPARFILTROS a",
+    "[data-gx-cntrl='LIMPARFILTROS'] a",
+    "a[data-gx-evt='5'][data-gx-evt-control='LIMPARFILTROS']",
+    "a:has-text('Limpar Filtros')",
+    "a:has-text('LIMPAR FILTROS')",
+]
 
 
 def is_dashboard(page):
@@ -108,58 +127,280 @@ def garantir_login(page, resultado):
     return False
 
 
-def encontrar_link_limpar_filtros(page):
-    seletores = [
-        "#DIVLIMPAFILTRO a",
-        "#DIVLIMPARFILTRO a",
-        "#LIMPARFILTROS a",
-        "a:has-text('Limpar Filtros')",
-        "a:has-text('LIMPAR FILTROS')",
-    ]
+def _safe_eval(locator, script):
+    try:
+        return locator.evaluate(script)
+    except Exception:
+        return None
+
+
+def _estado_elemento(locator):
+    return _safe_eval(
+        locator,
+        """
+        (el) => {
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return {
+                tag: (el.tagName || '').toLowerCase(),
+                id: el.id || null,
+                class_name: el.className || '',
+                style_attr: el.getAttribute('style') || '',
+                data_gx_cntrl: el.getAttribute('data-gx-cntrl') || '',
+                data_gx_evt: el.getAttribute('data-gx-evt') || '',
+                data_gx_evt_control: el.getAttribute('data-gx-evt-control') || '',
+                text: (el.innerText || el.textContent || '').replace(/\\s+/g, ' ').trim(),
+                display: style.display || '',
+                visibility: style.visibility || '',
+                opacity: style.opacity || '',
+                width: rect.width || 0,
+                height: rect.height || 0,
+                hidden_attr: el.hasAttribute('hidden'),
+                aria_hidden: el.getAttribute('aria-hidden') || null,
+                has_gx_invisible: (el.className || '').includes('gx-invisible'),
+                is_visible: (
+                    style.display !== 'none' &&
+                    style.visibility !== 'hidden' &&
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    !el.hasAttribute('hidden')
+                ),
+            };
+        }
+        """,
+    )
+
+
+def obter_estado_tela_contratos(page):
+    resumo = {
+        "url": page.url,
+        "contratos_visiveis_qtd": 0,
+        "contratos_visiveis_amostra": [],
+        "assinatura_visivel": "",
+    }
+
+    script = """
+    () => {
+        const normalizar = (txt) => (txt || '').replace(/\\s+/g, ' ').trim();
+        const isVisible = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            const rect = el.getBoundingClientRect();
+            return (
+                style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                rect.width > 0 &&
+                rect.height > 0
+            );
+        };
+
+        const anchors = Array.from(document.querySelectorAll('a[href*="wbpvencontrato"]'))
+            .filter(a => isVisible(a))
+            .map(a => normalizar(a.innerText || a.textContent || ''))
+            .filter(Boolean);
+
+        return {
+            contratos_visiveis_qtd: anchors.length,
+            contratos_visiveis_amostra: anchors.slice(0, 15),
+            assinatura_visivel: anchors.join('|'),
+        };
+    }
+    """
 
     for frame in page.frames:
-        for selector in seletores:
+        try:
+            dados = frame.evaluate(script)
+            if dados and (dados.get("contratos_visiveis_qtd") or 0) > 0:
+                resumo.update(dados)
+                return resumo
+        except Exception:
+            pass
+
+    return resumo
+
+
+def obter_estado_limpar_filtros(page):
+    estado_padrao = {
+        "encontrado": False,
+        "selector": None,
+        "frame_url": None,
+        "container": None,
+        "anchor": None,
+        "disponivel_para_limpar": False,
+        "ja_estava_oculto_ou_limpo": False,
+    }
+
+    for frame in page.frames:
+        # 1) tenta primeiro no container
+        for selector in CLEAR_FILTER_CONTAINER_SELECTORS:
+            try:
+                loc = frame.locator(selector).first
+                if loc.count() == 0:
+                    continue
+
+                container = _estado_elemento(loc)
+                if not container:
+                    continue
+
+                anchor = None
+                try:
+                    link_loc = loc.locator("a").first
+                    if link_loc.count() > 0:
+                        anchor = _estado_elemento(link_loc)
+                except Exception:
+                    pass
+
+                encontrado = True
+                anchor_visible = bool(anchor and anchor.get("is_visible"))
+                container_visible = bool(container.get("is_visible"))
+                has_gx_invisible = bool(container.get("has_gx_invisible")) or bool(anchor and anchor.get("has_gx_invisible"))
+
+                disponivel = (anchor_visible or container_visible) and not has_gx_invisible
+                ja_oculto = (
+                    has_gx_invisible
+                    or container.get("display") == "none"
+                    or not (anchor_visible or container_visible)
+                )
+
+                return {
+                    "encontrado": encontrado,
+                    "selector": selector,
+                    "frame_url": frame.url,
+                    "container": container,
+                    "anchor": anchor,
+                    "disponivel_para_limpar": disponivel,
+                    "ja_estava_oculto_ou_limpo": ja_oculto and not disponivel,
+                }
+            except Exception:
+                pass
+
+        # 2) fallback só pelo link visível
+        for selector in CLEAR_FILTER_LINK_SELECTORS:
+            try:
+                loc = frame.locator(selector).first
+                if loc.count() == 0:
+                    continue
+
+                anchor = _estado_elemento(loc)
+                if not anchor:
+                    continue
+
+                return {
+                    "encontrado": True,
+                    "selector": selector,
+                    "frame_url": frame.url,
+                    "container": None,
+                    "anchor": anchor,
+                    "disponivel_para_limpar": bool(anchor.get("is_visible")),
+                    "ja_estava_oculto_ou_limpo": not bool(anchor.get("is_visible")),
+                }
+            except Exception:
+                pass
+
+    return estado_padrao
+
+
+def encontrar_link_limpar_filtros_clicavel(page):
+    for frame in page.frames:
+        for selector in CLEAR_FILTER_LINK_SELECTORS:
             try:
                 loc = frame.locator(selector).first
                 if loc.count() > 0 and loc.is_visible():
                     return frame, loc, selector
             except Exception:
                 pass
-
     return None, None, None
 
 
 def limpar_filtros_se_existir(page):
-    frame, loc, selector = encontrar_link_limpar_filtros(page)
+    tela_antes = obter_estado_tela_contratos(page)
+    estado_antes = obter_estado_limpar_filtros(page)
+
+    retorno = {
+        "encontrado": estado_antes["encontrado"],
+        "clicado": False,
+        "confirmado": False,
+        "ja_estava_limpo": False,
+        "selector": estado_antes["selector"],
+        "mensagem": "",
+        "estado_antes": estado_antes,
+        "estado_depois": None,
+        "tela_antes": tela_antes,
+        "tela_depois": None,
+    }
+
+    if not estado_antes["encontrado"]:
+        retorno["confirmado"] = True
+        retorno["ja_estava_limpo"] = True
+        retorno["mensagem"] = "Limpar filtros não encontrado; seguindo sem clicar"
+        retorno["estado_depois"] = estado_antes
+        retorno["tela_depois"] = tela_antes
+        return retorno
+
+    if not estado_antes["disponivel_para_limpar"]:
+        retorno["confirmado"] = True
+        retorno["ja_estava_limpo"] = True
+        retorno["mensagem"] = "Limpar filtros encontrado, mas já estava oculto/indisponível"
+        retorno["estado_depois"] = estado_antes
+        retorno["tela_depois"] = tela_antes
+        return retorno
+
+    frame, loc, selector = encontrar_link_limpar_filtros_clicavel(page)
+    retorno["selector"] = selector or retorno["selector"]
 
     if not loc:
-        return {
-            "encontrado": False,
-            "clicado": False,
-            "selector": None,
-            "mensagem": "Limpar filtros não encontrado"
-        }
+        retorno["mensagem"] = "Estado indicava botão visível, mas o link clicável não foi localizado"
+        retorno["estado_depois"] = obter_estado_limpar_filtros(page)
+        retorno["tela_depois"] = obter_estado_tela_contratos(page)
+        return retorno
 
     try:
-        loc.click(force=True)
         try:
-            page.wait_for_load_state("networkidle", timeout=30000)
+            loc.scroll_into_view_if_needed(timeout=3000)
         except Exception:
-            page.wait_for_timeout(5000)
+            pass
 
-        return {
-            "encontrado": True,
-            "clicado": True,
-            "selector": selector,
-            "mensagem": "Limpar filtros encontrado e clicado"
-        }
+        loc.click(force=True, timeout=5000)
+        retorno["clicado"] = True
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:
+            pass
+
+        confirmado = False
+        estado_depois = None
+
+        for _ in range(20):
+            page.wait_for_timeout(500)
+            estado_depois = obter_estado_limpar_filtros(page)
+
+            if (
+                not estado_depois["encontrado"]
+                or not estado_depois["disponivel_para_limpar"]
+                or estado_depois["ja_estava_oculto_ou_limpo"]
+            ):
+                confirmado = True
+                break
+
+        tela_depois = obter_estado_tela_contratos(page)
+
+        retorno["confirmado"] = confirmado
+        retorno["estado_depois"] = estado_depois
+        retorno["tela_depois"] = tela_depois
+
+        if confirmado:
+            retorno["mensagem"] = "Limpar filtros clicado e ocultação do botão confirmada"
+        else:
+            retorno["mensagem"] = "Limpar filtros clicado, mas não foi possível confirmar a mudança visual"
+
+        return retorno
+
     except Exception as e:
-        return {
-            "encontrado": True,
-            "clicado": False,
-            "selector": selector,
-            "mensagem": f"Limpar filtros encontrado, mas erro ao clicar: {str(e)}"
-        }
+        retorno["mensagem"] = f"Limpar filtros encontrado, mas erro ao clicar: {str(e)}"
+        retorno["estado_depois"] = obter_estado_limpar_filtros(page)
+        retorno["tela_depois"] = obter_estado_tela_contratos(page)
+        return retorno
 
 
 def ajustar_linhas_por_pagina(page, valor="120"):
@@ -530,6 +771,11 @@ def main():
         "tela_contratos_aberta": False,
         "limpar_filtros_encontrado": False,
         "limpar_filtros_clicado": False,
+        "limpar_filtros_confirmado": False,
+        "limpar_filtros_ja_estava_limpo": False,
+        "limpar_filtros_mensagem": "",
+        "limpar_filtros_estado_antes": {},
+        "limpar_filtros_estado_depois": {},
         "linhas_por_pagina_ajustado": False,
         "linhas_por_pagina_mensagem": "",
         "paginacao": {},
@@ -570,6 +816,11 @@ def main():
             acao_limpar = limpar_filtros_se_existir(page)
             resultado["limpar_filtros_encontrado"] = acao_limpar["encontrado"]
             resultado["limpar_filtros_clicado"] = acao_limpar["clicado"]
+            resultado["limpar_filtros_confirmado"] = acao_limpar["confirmado"]
+            resultado["limpar_filtros_ja_estava_limpo"] = acao_limpar["ja_estava_limpo"]
+            resultado["limpar_filtros_mensagem"] = acao_limpar["mensagem"]
+            resultado["limpar_filtros_estado_antes"] = acao_limpar["estado_antes"]
+            resultado["limpar_filtros_estado_depois"] = acao_limpar["estado_depois"]
 
             ajuste_pagina = ajustar_linhas_por_pagina(page, "120")
             resultado["linhas_por_pagina_ajustado"] = ajuste_pagina["alterado"]
